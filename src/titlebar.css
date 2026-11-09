@@ -1,0 +1,40 @@
+.titlebar {
+  height: 46px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: stretch;
+  background: #fff;
+  border-bottom: 1px solid #e7eaf1;
+  user-select: none;
+}
+
+.titlebar-drag {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  padding: 0 18px;
+}
+
+.titlebar-drag * { pointer-events: none; }
+.titlebar-icon { width: 24px; height: 24px; flex-shrink: 0; object-fit: contain; }
+.titlebar-name { color: #273047; font-size: 12px; font-weight: 650; white-space: nowrap; }
+.titlebar-name span { margin-left: 5px; color: #737d92; font-weight: 500; }
+.titlebar-divider { width: 1px; height: 14px; margin: 0 3px; background: #e0e4ec; }
+.titlebar-subtitle { color: #8b94a7; font-size: 11px; white-space: nowrap; }
+.titlebar-status { display: flex; align-items: center; gap: 7px; margin-left: auto; color: #8b94a7; font-size: 10px; white-space: nowrap; }
+.titlebar-status i { width: 6px; height: 6px; border-radius: 50%; background: #27b587; }
+.titlebar .titlebar-settings { align-self: center; width: 30px; height: 30px; margin: 0 8px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #7d879d; }
+.titlebar .titlebar-settings:hover, .titlebar .titlebar-settings[aria-pressed="true"] { color: #087f78; background: #e8f2f0; }
+.window-controls { display: flex; align-items: stretch; }
+.window-control { width: 44px; padding: 0; border: 0; border-radius: 0; background: transparent; color: #4b556b; }
+.window-control:hover:not(:disabled) { background: #edf0f5; }
+.window-close:hover:not(:disabled) { background: #c42b1c; color: #fff; }
+.titlebar button:focus-visible { outline: 2px solid #087f78; outline-offset: -3px; }
+
+@media (max-width: 700px) {
+  .titlebar-drag { gap: 7px; padding: 0 10px; }
+  .titlebar-divider, .titlebar-subtitle, .titlebar-status { display: none; }
+  .window-control { width: 38px; }
+}

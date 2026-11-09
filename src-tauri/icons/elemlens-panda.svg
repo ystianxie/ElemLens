@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>ElemLens — minimal panda</title>
+  <rect x="32" y="32" width="960" height="960" rx="232" fill="#DCE9E1"/>
+  <g fill="#222B29">
+    <circle cx="317" cy="319" r="88"/>
+    <circle cx="707" cy="319" r="88"/>
+  </g>
+  <path d="M512 303C353 303 235 394 235 550C235 692 341 778 512 778C683 778 789 692 789 550C789 394 671 303 512 303Z" fill="#FFFEF7" stroke="#222B29" stroke-width="16"/>
+  <g fill="#222B29">
+    <ellipse cx="402" cy="526" rx="58" ry="82" transform="rotate(28 402 526)"/>
+    <ellipse cx="622" cy="526" rx="58" ry="82" transform="rotate(-28 622 526)"/>
+  </g>
+  <g fill="#FFFEF7">
+    <circle cx="415" cy="517" r="17"/>
+    <circle cx="609" cy="517" r="17"/>
+  </g>
+  <path d="M485 632C480 619 490 610 512 610C534 610 544 619 539 632C535 643 521 654 512 654C503 654 489 643 485 632Z" fill="#222B29"/>
+  <path d="M512 653V670M512 670C503 682 489 684 479 678M512 670C521 682 535 684 545 678" fill="none" stroke="#222B29" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,0 +1,11 @@
+.element-geometry { margin: 20px 0 0; padding-top: 16px; border-top: 1px solid #edf0f5; }
+.geometry-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.geometry-heading .detail-label { margin: 0; }
+.geometry-heading .icon-button { width: 25px; height: 25px; }
+.geometry-values { margin: 0; padding: 4px 10px; background: #f7f9fb; border: 1px solid #e5e8f0; border-radius: 7px; }
+.geometry-values > div { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 6px; align-items: baseline; padding: 7px 0; }
+.geometry-values > div + div { border-top: 1px solid #e5e8f0; }
+.geometry-values dt { font-size: 11px; color: #697586; }
+.geometry-values dd { margin: 0; font: 11px/1.65 Consolas, monospace; color: #273244; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.geometry-note, .geometry-status { margin: 7px 0 0; font-size: 10px; line-height: 1.7; color: #8490a0; }
+.geometry-status.failed { color: #b45309; overflow-wrap: anywhere; }

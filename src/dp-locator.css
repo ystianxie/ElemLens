@@ -1,0 +1,29 @@
+.dp-builder{background:#fff;border:1px solid #e2e6ee;border-bottom:0;padding:14px 14px 10px}
+.dp-builder-title{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:13px}
+.dp-builder-title strong{font-size:12px;font-weight:600;color:#3b5660}
+.dp-builder-title>span{font-size:10px;color:#919aad}
+.dp-condition-head,.dp-condition{display:grid;grid-template-columns:minmax(112px,1fr) 78px minmax(100px,1.6fr);gap:8px;align-items:start}
+.dp-condition-head{padding:0 8px 7px;font-size:10px;color:#9aa3b5}
+.dp-condition-list{max-height:272px;overflow:auto;border:1px solid #e8ecf2;border-radius:6px}
+.dp-condition{padding:8px;border-bottom:1px solid #edf0f5}
+.dp-condition:last-child{border-bottom:0}
+.dp-condition.checked{background:#f2f9f7}
+.dp-condition label{display:flex;align-items:center;gap:7px;min-height:30px;min-width:0;cursor:pointer}
+.dp-condition-property{min-width:0}
+.dp-condition .dp-text-scope{min-height:20px;margin-left:20px;gap:5px;color:#778690;font-size:10px;white-space:nowrap}
+.dp-condition input[type=checkbox]{accent-color:#087f78;box-shadow:none;width:13px;height:13px;flex-shrink:0;margin:0;padding:0}
+.dp-condition code{font:11px/1.6 Consolas,monospace;color:#607a77;overflow-wrap:anywhere;min-width:0}
+.dp-condition select,.dp-condition textarea{width:100%;min-width:0;border:1px solid #e0e6ec;border-radius:4px;padding:6px;font-size:11px;background:#fff;color:#536077;line-height:1.5}
+.dp-condition select{height:30px}
+.dp-condition textarea{font-family:Consolas,"Microsoft YaHei",monospace;resize:vertical;min-height:30px;max-height:140px}
+.dp-condition textarea:read-only{color:#7b8799;background:#f9fbfc}
+.dp-condition :disabled{opacity:.55;cursor:not-allowed}
+.dp-condition-error{grid-column:1/-1;color:#b25d52;font-size:10px;line-height:1.7;overflow-wrap:anywhere;margin-top:3px}
+.dp-builder-hint{font-size:10px;color:#98a1b1;line-height:1.8;margin-top:9px}
+.dp-manual-note{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:10px;color:#9a824b;margin-top:8px}
+.dp-manual-note button{padding:4px 7px;font-size:10px}
+
+.code-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:9px 12px;background:#fff;border:1px solid #e2e6ee;border-bottom:0;font-size:11px;color:#7e899f}
+.code-actions label{display:flex;align-items:center;gap:5px;cursor:pointer;font-family:Consolas,monospace;color:#536077}
+.code-actions input[type=checkbox]{accent-color:#087f78;width:13px;height:13px;margin:0;padding:0;box-shadow:none}
+.code-actions textarea{flex:1;min-width:120px;min-height:30px;max-height:120px;border:1px solid #e0e6ec;border-radius:4px;padding:5px 7px;font-size:11px;line-height:1.6;resize:vertical;color:#536077}

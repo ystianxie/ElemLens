@@ -1,0 +1,24 @@
+.details-pane.element-details-pane{display:flex;flex-direction:column;overflow:hidden;min-height:0;min-width:0}
+.element-details-body{flex:1;min-height:0;overflow:auto}
+.capture-history{display:flex;flex-direction:column;max-height:45%;flex-shrink:0;border-top:1px solid #e5e8f0;background:#fbfcfe;min-height:0}
+.capture-history-toggle{flex-shrink:0;width:100%;height:46px;justify-content:flex-start;padding:0 20px;border:0;border-radius:0;background:transparent;color:#66748c;font-size:11px}
+.capture-history-toggle>svg:first-child{color:#809a96}
+.capture-history-toggle>svg:last-child{margin-left:auto;transition:transform .15s}
+.capture-history-toggle>svg.expanded{transform:rotate(90deg)}
+.capture-history-toggle:focus-visible,.capture-history-item:focus-visible{outline:2px solid #158d84;outline-offset:-2px}
+.capture-history-toggle .count{font-size:9px;min-width:20px}
+.capture-history>div:not([hidden]){display:flex;flex-direction:column;min-height:0}
+.capture-history-hint{flex-shrink:0;padding:0 20px 10px;font-size:9px;color:#8793a7}
+.capture-history-empty{padding:8px 20px 22px;font-size:10px;line-height:1.8;color:#8d96ab}
+.capture-history-list{min-height:0;list-style:none;margin:0;padding:0 10px 10px;max-height:min(300px,36vh);overflow:auto;overscroll-behavior:contain}
+.capture-history-list li+li{margin-top:4px}
+.capture-history-item{display:flex;flex-direction:column;align-items:stretch;gap:6px;width:100%;min-width:0;padding:10px;text-align:left;white-space:normal;border:1px solid transparent;background:transparent}
+.capture-history-item.selected{background:#e9f5f1;border-color:#c2e1da}
+.capture-history-meta{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.capture-history-meta code{font:11px Consolas,monospace;color:#087f78;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.capture-history-meta time{font:9px Consolas,monospace;color:#8d96ab;flex-shrink:0}
+.capture-history-summary{font-size:11px;line-height:1.5;color:#58667c;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.capture-history-source{display:flex;align-items:center;gap:8px;font-size:9px;color:#8894a7;min-width:0}
+.capture-history-source>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.capture-history-snapshot{flex-shrink:0;color:#9a824b;background:#fff5df;border-radius:3px;padding:1px 4px}
+.capture-snapshot-note{font-size:10px;line-height:1.8;color:#9a824b;background:#fff8e9;border:1px solid #f0e6cc;border-radius:6px;padding:10px 12px;margin:0 0 14px}
