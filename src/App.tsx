@@ -456,6 +456,10 @@ export default function App() {
                     </div>
                 </section>
                 <section className="editor-pane">
+                    <h1 className="workspace-title">
+                        {workMode === 'elements' ? <Crosshair size={16}/> : workMode === 'network' ? <Radio size={16}/> : <CircleDot size={16}/>}
+                        {workMode === 'elements' ? '元素定位' : workMode === 'network' ? '网络监听' : '操作录制'}
+                    </h1>
                     <div id="recording-workspace" role="tabpanel" aria-labelledby="recording-tab" hidden={workMode !== 'recording'}>
                         <RecordingPanel recorder={recorder} connected={!!tab && desktop} disabled={disabled}/>
                     </div>

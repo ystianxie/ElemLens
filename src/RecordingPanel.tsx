@@ -51,10 +51,6 @@ export function RecordingPanel({recorder: r, connected, disabled}: {
     }
 
     return <div className="recording-panel">
-        <div className="recording-heading">
-            <div><h1>操作录制</h1><p>正常操作网页，实时生成 DrissionPage 代码。</p></div>
-            <span className={'recording-status ' + r.phase}><Circle size={9}
-                                                                    fill="currentColor"/>{labels[r.phase]}</span></div>
         <div className="recording-toolbar">
             {!active ? <button className="primary" disabled={locked || !connected || !r.ready || !r.sameSource}
                                onClick={() => void r.control('start').catch(() => {
@@ -72,6 +68,8 @@ export function RecordingPanel({recorder: r, connected, disabled}: {
                 setCopyMessage('');
             }}><Trash2 size={14}/>清空
             </button>
+            <span className={'recording-status ' + r.phase}><Circle size={9}
+                fill="currentColor"/>{labels[r.phase]}</span>
             <span className="recording-count">{r.steps.length} 步</span>
         </div>
 
@@ -139,7 +137,7 @@ export function RecordingDetails({recorder: r, disabled, pythonReady, connected,
     return <div className="recording-details">
         <div className="pane-heading"><h2>第 {r.steps.indexOf(step) + 1} 步
             · {step.action === 'click' ? '点击' : '输入'}</h2></div>
-        <div className="recording-details-body">
+        <div className="details-content recording-details-body">
             <div className="element-tag"><code>&lt;{step.element.tag}&gt;</code><span
                 className="recording-unverified">录制快照</span></div>
             <p className="recording-page" title={step.pageUrl}>{step.pageTitle || step.pageUrl}</p>

@@ -145,9 +145,6 @@ export function NetworkPanel(props: Props) {
     }
 
     return <div className="network-panel" hidden={props.hidden}>
-        <div className="network-intro"><Radio size={22}/>
-            <div><strong>验证监听 URL</strong><p>设置 URL 关键词，在网页中操作，检查是否捕获到目标请求。</p></div>
-        </div>
         <label className="network-label"
                htmlFor="network-targets">监听关键词 <span>URL 包含任意一行内容时捕获，区分大小写</span></label>
         <textarea id="network-targets" rows={3} value={keywords} disabled={active} spellCheck={false}
