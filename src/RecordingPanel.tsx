@@ -36,7 +36,8 @@ export function RecordingPanel({recorder: r, connected, disabled}: {
 }) {
     const [copyMessage, setCopyMessage] = useState('');
     const [codeExpanded, setCodeExpanded] = useState(false);
-    const generated = recordingCode(r.steps);
+    const [withSteps, setWithSteps] = useState(false);
+    const generated = recordingCode(r.steps, withSteps);
     const active = r.phase === 'recording' || r.phase === 'paused';
     const locked = disabled || r.pending;
     const labels = {idle: '尚未开始', recording: '录制中', paused: '已暂停', finished: '已结束'};
@@ -109,6 +110,11 @@ export function RecordingPanel({recorder: r, connected, disabled}: {
                                                                                          className={codeExpanded ? 'expanded' : ''}/>DP
                 代码
             </button>
+            <label className="recording-code-option"><input type="checkbox" checked={withSteps}
+                onChange={event => {
+                    setWithSteps(event.target.checked);
+                    setCopyMessage('');
+                }}/>步骤</label>
             <button disabled={locked || !generated.code || !!generated.errors.length}
                     onClick={() => void copy()}>{copyMessage === '已复制' ? <Check size={14}/> : <Copy size={14}/>}复制全部
             </button>

@@ -55,7 +55,7 @@ export function recordingStepError(step: RecordedStep): string {
     if (!step.expression.trim()) return '定位表达式不能为空';
     return '';
 }
-export function recordingCode(steps: RecordedStep[]): {code: string; errors: string[]} {
+export function recordingCode(steps: RecordedStep[], withSteps = false): {code: string; errors: string[]} {
     const errors = steps.flatMap((step, index) => {
         const error = recordingStepError(step);
         return error ? [`第 ${index + 1} 步：${error}`] : [];
@@ -64,20 +64,24 @@ export function recordingCode(steps: RecordedStep[]): {code: string; errors: str
     const lines = ['# 在已连接并准备好起始页面的 DrissionPage tab 上执行。', '# 定位校验只确认匹配情况，运行前请核对实际页面和操作效果。'];
     if (steps.some(step => step.sensitive)) lines.push('password = ""  # 请填写密码，或替换为你的变量');
     for (const [index, step] of steps.entries()) {
-        lines.push('', `# ${index + 1}. ${step.action === 'click' ? '点击' : '输入'} ${recordingStepName(step).replace(/[\r\n\u2028\u2029]/g, ' ')}`);
-        if (recordingStepError(step)) { lines.push('# 此步骤缺少有效定位，请修正后复制。'); continue; }
+        const title = `${index + 1}. ${step.action === 'click' ? '点击' : '输入'} ${recordingStepName(step).replace(/[\r\n\u2028\u2029]/g, ' ')}`;
+        if (recordingStepError(step)) { lines.push('', `# ${title}`, '# 此步骤缺少有效定位，请修正后复制。'); continue; }
+        const stepLines: string[] = [];
         if (step.action === 'click') {
-            lines.push(dpCode(step.context, step.mode, step.expression, {click:true}));
+            stepLines.push(dpCode(step.context, step.mode, step.expression, {click:true}));
         } else {
             const lookup = dpCode(step.context, step.mode, step.expression).split('\n');
             const element = lookup.pop()!;
-            lines.push(...lookup);
+            stepLines.push(...lookup);
             const value = step.editedValue ?? step.value ?? '';
-            if (!step.sensitive && value === '') lines.push(`${element}.clear()`);
+            if (!step.sensitive && value === '') stepLines.push(`${element}.clear()`);
             else if (!step.sensitive && ['\n','\ue007','\ue006'].includes(value)) {
-                lines.push(`ele = ${element}`, 'ele.clear()', `ele.input(${pythonString(value)})`);
-            } else lines.push(`${element}.input(${step.sensitive ? 'password' : pythonString(value)}, clear=True)`);
+                stepLines.push(`ele = ${element}`, 'ele.clear()', `ele.input(${pythonString(value)})`);
+            } else stepLines.push(`${element}.input(${step.sensitive ? 'password' : pythonString(value)}, clear=True)`);
         }
+        lines.push('', withSteps ? `with step(${pythonString(title)}):` : `# ${title}`);
+        const body = stepLines.join('\n');
+        lines.push(withSteps ? body.split('\n').map(line => `    ${line}`).join('\n') : body);
     }
     return {code:lines.join('\n'), errors};
 }

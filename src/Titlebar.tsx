@@ -45,7 +45,7 @@ export function Titlebar({ desktop, settingsOpen, onSettingsToggle, onError }: T
 
   return <header className="titlebar">
     <div className="titlebar-drag" data-tauri-drag-region>
-      <img className="titlebar-icon" src="/icon2.png" alt="" draggable="false"/>
+      <img className="titlebar-icon" src="/icon.png" alt="" draggable="false"/>
       <strong className="titlebar-name">觅元 <span>ElemLens</span></strong>
       <span className="titlebar-divider"/>
       <span className="titlebar-subtitle">元素工作台</span>

@@ -28,6 +28,35 @@ describe('recording steps and DP code', () => {
         expect(result.code).toContain(`.input(${pythonString(value)}, clear=True)`);
         expect(result.code).toContain('.clear()');expect(result.code).toContain('.click()');
     });
+    it('optionally wraps each action in a numbered step and keeps the default format', () => {
+        let steps=mergeRecordedStep([],{...event,value:'123',element:{...event.element,attributes:{id:'voyageNo'}}});
+        steps=mergeRecordedStep(steps,{...event,id:'click',recordedAt:1001,action:'click'});
+        expect(recordingCode(steps).code).toContain('# 1. 输入 voyageNo\ntab.ele("tag:input@@id=voyageNo").input("123", clear=True)');
+        expect(recordingCode(steps, false)).toEqual(recordingCode(steps));
+        const result=recordingCode(steps, true);
+        expect(result.errors).toEqual([]);
+        expect(result.code).toContain('with step("1. 输入 voyageNo"):\n    tab.ele("tag:input@@id=voyageNo").input("123", clear=True)');
+        expect(result.code).toContain('with step("2. 点击 name"):\n    tab.ele("tag:input@@id=name").click()');
+        expect(result.code).not.toContain('# 1. 输入');
+        expect(recordingCode([], true)).toEqual({code:'',errors:[]});
+    });
+    it('indents all context and input lines and escapes step titles', () => {
+        const name='name "quoted"\\path\nnext';
+        let steps=mergeRecordedStep([],{...event,value:'\n',element:{...event.element,attributes:{'aria-label':name}},
+            context:{...event.context,steps:[{kind:'frame',selector:'#form'},{kind:'shadow',selector:'x-field'}]}});
+        steps=mergeRecordedStep(steps,{...event,id:'click',recordedAt:1001,action:'click',context:steps[0].context});
+        steps=mergeRecordedStep(steps,{...event,id:'clear',recordedAt:1002,value:''});
+        const code=recordingCode(steps, true).code;
+        expect(code).toContain('with step(' + pythonString('1. 输入 ' + name.replace(/\n/g,' ')) + '):');
+        expect(code).toContain('    context = tab.ele("css:#form")\n    context = context.ele("css:x-field").shadow_root\n    ele = context.ele(');
+        expect(code).toContain('\n    ele.clear()\n    ele.input("\\n")');
+        expect(code).toContain('with step("2. 点击 name"):\n    context = tab.ele("css:#form")\n    context = context.ele("css:x-field").shadow_root\n    context.ele("tag:input@@id=name").click()');
+        expect(code).toContain('with step("3. 输入 name"):\n    tab.ele("tag:input@@id=name").clear()');
+        steps[0].expression='';
+        const invalid=recordingCode(steps, true);
+        expect(invalid.errors).toEqual(['第 1 步：定位表达式不能为空']);
+        expect(invalid.code).not.toContain('with step(' + pythonString('1. 输入 ' + name.replace(/\n/g,' ')) + '):');
+    });
     it('redacts password snapshots and generates an editable variable placeholder', () => {
         const steps=mergeRecordedStep([],{...event,sensitive:true,value:'secret',element:{...event.element,attributes:{type:'password',value:'secret'}}});
         expect(JSON.stringify(steps)).not.toContain('secret');
