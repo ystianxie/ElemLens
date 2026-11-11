@@ -15,3 +15,5 @@
 
 .workspace-title{display:flex;align-items:center;gap:8px;margin:0 0 16px;font-size:15px;font-weight:600;line-height:1.5;color:#434d65}
 .workspace-title>svg{flex-shrink:0;color:#16857b}
+
+.settings-panel .capture-window-setting{display:flex;align-items:center;gap:8px}.capture-window-setting input{accent-color:#087f78}.settings-panel .capture-window-setting span{margin-left:2px}

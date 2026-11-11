@@ -4,10 +4,11 @@ import {listen} from '@tauri-apps/api/event';
 import {editRecordedStep, invalidateValidations, matchedValidation, mergeRecordedStep, type RecordedEvent, type RecordedStep, type RecordingPhase} from './recording';
 
 import type {QueryResult} from './types';
+import {hideCaptureWindow, previewWithHiddenWindow, type RestoreCaptureWindow} from './capture-window';
 
 type Source = {endpoint: string; target: string; title: string; url: string};
 const desktop = '__TAURI_INTERNALS__' in window;
-export function useRecording(source: Source, onStarted: () => void, environment: {python:string; ready:boolean; capturing:boolean}) {
+export function useRecording(source: Source, onStarted: () => void, environment: {python:string; ready:boolean; capturing:boolean; hideCaptureWindow:boolean}) {
     const [steps, setSteps] = useState<RecordedStep[]>([]);
     const [phase, setPhase] = useState<RecordingPhase>('idle');
     const [pending, setPending] = useState(false), [ready, setReady] = useState(false);
@@ -97,7 +98,10 @@ export function useRecording(source: Source, onStarted: () => void, environment:
         pendingRef.current = true; setValidatingId(id); setError('');
         const current = () => epoch === validationEpoch.current &&
             stepsRef.current.some(item => item.id === id && item.expression === step.expression && item.mode === step.mode);
+        let restore: RestoreCaptureWindow | undefined;
+        let previewed = false;
         try {
+            restore = await hideCaptureWindow(environment.hideCaptureWindow);
             const result = await invoke<QueryResult & {pageUrl:string}>('query_recording_step', {
                 python:environment.python, endpoint:source.endpoint, targetId:source.target,
                 steps:step.context.steps, mode:step.mode, expression:step.expression,
@@ -107,6 +111,7 @@ export function useRecording(source: Source, onStarted: () => void, environment:
             setSteps(previous => previous.map(item => item.id === id ? {...item,validation} : item));
             try {
                 await invoke('highlight', {context:result.context,tokens:result.matches.map(item => item.token),scroll:false});
+                previewed = true;
             } catch (e) {
                 if (current()) {
                     setSteps(previous => previous.map(item => item.id === id ? {...item,validation:{...validation,status:'stale',message:'高亮失败，请重新校验：' + String(e)}} : item));
@@ -115,7 +120,11 @@ export function useRecording(source: Source, onStarted: () => void, environment:
         } catch (e) {
             if (current()) setSteps(previous => previous.map(item => item.id === id ? {...item,
                 validation:{status:'error',checkedAt:Date.now(),message:String(e)}} : item));
-        } finally { pendingRef.current = false; setValidatingId(null); }
+        } finally {
+            try { if (restore) await restore(previewed ? 5000 : 0); }
+            catch (e) { setError(String(e)); }
+            finally { pendingRef.current = false; setValidatingId(null); }
+        }
     }
     async function highlightMatch(id: string, token: string) {
         if (!canValidate || pendingRef.current) return;
@@ -123,7 +132,8 @@ export function useRecording(source: Source, onStarted: () => void, environment:
         if (!step?.validation?.result || step.validation.status === 'stale' || step.validation.status === 'error') return;
         pendingRef.current = true; setPending(true); setError('');
         try {
-            await invoke('highlight', {context:step.validation.result.context,tokens:[token],scroll:true});
+            const context = step.validation.result.context;
+            await previewWithHiddenWindow(environment.hideCaptureWindow, () => invoke('highlight', {context,tokens:[token],scroll:true}));
         } catch (e) {
             setSteps(previous => previous.map(item => item.id === id && item.validation ? {...item,validation:{...item.validation,status:'stale',message:'高亮失败，请重新校验：' + String(e)}} : item));
         }

@@ -1,7 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod cdp;
+mod capture_window;
 mod geometry;
 mod network;
+mod desktop;
+mod desktop_native;
+mod desktop_job;
+use desktop::{desktop_request, desktop_capture, desktop_highlight};
 use cdp::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -24,11 +29,29 @@ struct AppState {
     connection: RwLock<Option<Arc<Connection>>>,
     operation: Mutex<()>,
     network: network::Listener,
+    desktop: desktop::Inspector,
 }
-#[derive(Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Settings {
     python: String,
     browser: String,
+    #[serde(default, rename = "desktopPython")]
+    desktop_python: String,
+    #[serde(default = "default_hide_capture_window", rename = "hideCaptureWindow")]
+    hide_capture_window: bool,
+}
+fn default_hide_capture_window() -> bool {
+    true
+}
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            python: String::new(),
+            browser: String::new(),
+            desktop_python: String::new(),
+            hide_capture_window: default_hide_capture_window(),
+        }
+    }
 }
 #[derive(Clone, Serialize)]
 struct Browser {
@@ -485,7 +508,13 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .manage(capture_window::CaptureWindow::default())
         .invoke_handler(tauri::generate_handler![
+            capture_window::minimize_capture_window,
+            capture_window::restore_capture_window,
+            desktop_request,
+            desktop_capture,
+            desktop_highlight,
             inspect_browser,
             discover_browsers,
             list_tabs,
@@ -513,6 +542,7 @@ fn main() {
                 let window = window.clone();
                 tauri::async_runtime::spawn(async move {
                     let state = app.state::<AppState>();
+                    state.desktop.shutdown().await;
                     let _ = tokio::time::timeout(Duration::from_secs(3), disconnect(state)).await;
                     let _ = window.destroy();
                 });
@@ -524,6 +554,17 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capture_window_defaults_on_for_new_and_existing_settings() {
+        assert!(Settings::default().hide_capture_window);
+        let old: Settings = serde_json::from_str(r#"{"python":"python.exe","browser":""}"#).unwrap();
+        assert!(old.hide_capture_window);
+        let saved = Settings { hide_capture_window: false, ..Settings::default() };
+        let json = serde_json::to_value(saved).unwrap();
+        assert_eq!(json["hideCaptureWindow"], false);
+        let loaded: Settings = serde_json::from_value(json).unwrap();
+        assert!(!loaded.hide_capture_window);
+    }
     #[test]
     fn local_endpoints() {
         assert_eq!(endpoint("9222").unwrap(), "http://127.0.0.1:9222");

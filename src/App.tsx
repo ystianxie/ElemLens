@@ -36,12 +36,15 @@ import {ElementGeometryPanel} from './ElementGeometryPanel';
 import {NetworkDetails, NetworkPanel} from './NetworkPanel';
 import type {NetworkPacket} from './network';
 import {CaptureHistory} from './CaptureHistory';
+import {useDesktop} from './useDesktop';
+import {DesktopSources, DesktopPanel, DesktopDetails} from './DesktopWorkspace';
 import {useRecording} from './useRecording';
 import {RecordingPanel, RecordingDetails} from './RecordingPanel';
 import {appendCapture, isLiveCapture, saveCaptureConditions, type CaptureRecord} from './capture-history';
+import {hideCaptureWindow, previewWithHiddenWindow, type RestoreCaptureWindow} from './capture-window';
 
 const desktop = '__TAURI_INTERNALS__' in window;
-const emptySettings: Settings = {python: '', browser: ''};
+const emptySettings: Settings = {python: '', browser: '', desktopPython: '', hideCaptureWindow: true};
 export default function App() {
     const [browsers, setBrowsers] = useState<Browser[]>([]), [tabs, setTabs] = useState<Tab[]>([]);
     const [address, setAddress] = useState('127.0.0.1:9222'), [browser, setBrowser] = useState<Browser | null>(null), [tab, setTab] = useState<Tab | null>(null);
@@ -50,7 +53,7 @@ export default function App() {
     const [capturing, setCapturing] = useState(false), [capture, setCapture] = useState<Capture | null>(null), [result, setResult] = useState<QueryResult | null>(null), [selected, setSelected] = useState<ElementInfo | null>(null);
     const [context, setContext] = useState<Context | null>(null), [mode, setMode] = useState('CSS'), [expression, setExpression] = useState(''), [copied, setCopied] = useState('');
     const [browsersExpanded, setBrowsersExpanded] = useState(true);
-    const [workMode, setWorkMode] = useState<'elements' | 'network' | 'recording'>('elements');
+    const [workMode, setWorkMode] = useState<'elements' | 'network' | 'recording' | 'desktop'>('elements');
     const [networkPacket, setNetworkPacket] = useState<NetworkPacket | null>(null);
     const [captureHistory, setCaptureHistory] = useState<CaptureRecord[]>([]);
     const [activeCaptureRecord, setActiveCaptureRecord] = useState<CaptureRecord | null>(null);
@@ -59,7 +62,15 @@ export default function App() {
     const editingCaptureId = useRef<number | null>(null);
     const [dpConditions, setDpConditions] = useState<DpCondition[]>([]);
     const [codeClick, setCodeClick] = useState(true), [codeInput, setCodeInput] = useState(false), [inputText, setInputText] = useState('');
-    const recorder = useRecording({endpoint:browser?.endpoint ?? '', target:tab?.id ?? '', title:tab?.title ?? '', url:tab?.url ?? ''}, () => setCapturing(false), {python:settings.python,ready:pythonReady,capturing});
+    const captureWindowRestore = useRef<RestoreCaptureWindow | null>(null);
+    const restoreCaptureWindow = useCallback(async () => {
+        const restore = captureWindowRestore.current;
+        captureWindowRestore.current = null;
+        if (restore) await restore();
+    }, []);
+    const reportWindowRestore = () => { void restoreCaptureWindow().catch(e => setError(String(e))); };
+    const recorder = useRecording({endpoint:browser?.endpoint ?? '', target:tab?.id ?? '', title:tab?.title ?? '', url:tab?.url ?? ''}, () => { setCapturing(false); reportWindowRestore(); }, {python:settings.python,ready:pythonReady,capturing,hideCaptureWindow:settings.hideCaptureWindow});
+    const desk = useDesktop({active: workMode === 'desktop', python: settings.desktopPython?.trim() || settings.python, available: desktop, hideWindow: settings.hideCaptureWindow});
     const current = useRef({endpoint: '', target: ''}), generation = useRef(0), pythonGeneration = useRef(0),
         working = useRef(false);
     const execute = useCallback(async (label: string, task: () => Promise<void>) => {
@@ -78,6 +89,7 @@ export default function App() {
         }
     }, []);
     const clearPage = () => {
+        reportWindowRestore();
         currentTab.current = null;
         editingCaptureId.current = null;
         setActiveCaptureRecord(null);
@@ -97,6 +109,7 @@ export default function App() {
             data: unknown
         }>('browser-event', ({payload: event}) => {
             if (disposed || event.endpoint !== current.current.endpoint || event.targetId !== current.current.target) return;
+            if (['capture', 'cancel', 'disconnected', 'error'].includes(event.kind)) reportWindowRestore();
             if (event.kind === 'capture') {
                 const value = event.data as Capture;
                 const rows = defaultDpConditions(value.element);
@@ -146,7 +159,7 @@ export default function App() {
         });
         invoke<Settings>('load_settings').then(async value => {
             if (disposed) return;
-            setSettings(value);
+            setSettings({...emptySettings, ...value});
             if (value.python) {
                 const g = ++pythonGeneration.current;
                 try {
@@ -167,6 +180,7 @@ export default function App() {
         });
         return () => {
             disposed = true;
+            void restoreCaptureWindow().catch(() => {});
             void unlisten.then(fn => fn());
         };
     }, []);
@@ -225,11 +239,11 @@ export default function App() {
         }
     }
 
-    async function pickExecutable(kind: 'python' | 'browser') {
+    async function pickExecutable(kind: 'python' | 'browser' | 'desktopPython') {
         const value = await open({
             multiple: false,
             directory: false,
-            title: kind === 'python' ? '选择虚拟环境 Scripts/python.exe' : '选择 Chrome 或 Edge',
+            title: kind !== 'browser' ? '选择虚拟环境 Scripts/python.exe' : '选择 Chrome 或 Edge',
             filters: [{name: '可执行文件', extensions: ['exe']}]
         });
         if (typeof value === 'string') {
@@ -262,18 +276,20 @@ export default function App() {
         if (activeCaptureRecord && !isLiveCapture(activeCaptureRecord, {...current.current, generation: generation.current})) {
             throw Error('正在查看历史快照，请重新捕获元素后校验');
         }
-        setActiveCaptureRecord(null);
-        const g = generation.current;
-        setResult(null);
-        setSelected(null);
-        const scope = context ?? await invoke<Context>('root_context');
-        const value = await invoke<QueryResult>('query', {python: settings.python, context: scope, mode, expression});
-        if (g !== generation.current) return;
-        setContext(scope);
-        setResult(value);
-        setSelected(value.matches[0] ?? null);
-        await invoke('highlight', {context: scope, tokens: value.matches.map(e => e.token), scroll: false});
-        setNotice(value.total ? `已通过 ${value.engine} 找到 ${value.total} 个元素` : '未找到匹配元素');
+        return previewWithHiddenWindow(settings.hideCaptureWindow, async () => {
+            setActiveCaptureRecord(null);
+            const g = generation.current;
+            setResult(null);
+            setSelected(null);
+            const scope = context ?? await invoke<Context>('root_context');
+            const value = await invoke<QueryResult>('query', {python: settings.python, context: scope, mode, expression});
+            if (g !== generation.current) return;
+            setContext(scope);
+            setResult(value);
+            setSelected(value.matches[0] ?? null);
+            await invoke('highlight', {context: scope, tokens: value.matches.map(e => e.token), scroll: false});
+            setNotice(value.total ? `已通过 ${value.engine} 找到 ${value.total} 个元素` : '未找到匹配元素');
+        });
     }
 
     function restoreCapture(record: CaptureRecord) {
@@ -327,7 +343,7 @@ export default function App() {
         <div className="workspace">
             <Titlebar desktop={desktop} settingsOpen={showSettings} onSettingsToggle={() => setShowSettings(v => !v)}
                       onError={setError}/>
-            <div className="connection-bar">
+            {workMode === 'desktop' ? <div className="connection-bar desktop-connection"><strong>Windows 桌面元素</strong><span>{desk.status}</span><span className="connection-hint">{desk.backend.toUpperCase()} · 外部 Python 环境</span></div> : <div className="connection-bar">
                 <div className="address-input"><span>CDP</span><input aria-label="调试地址" value={address}
                                                                       onChange={e => setAddress(e.target.value)}
                                                                       placeholder="127.0.0.1:9222" onKeyDown={e => {
@@ -345,7 +361,7 @@ export default function App() {
                 <div className="bar-separator"/>
                 <button disabled={!desktop || disabled} onClick={() => void execute('启动中', launch)}><Plus size={16}/>启动浏览器
                 </button>
-                <span className="connection-hint">无需浏览器插件</span></div>
+                <span className="connection-hint">无需浏览器插件</span></div>}
             {showSettings && <section className="settings-panel">
                 <div className="section-title"><h3><Settings2 size={17}/>运行环境</h3>
                     <button title="收起设置" className="icon-button" onClick={() => setShowSettings(false)}><X
@@ -368,6 +384,11 @@ export default function App() {
                     </button>
                 </div>
                 <p className={'environment-status ' + (pythonReady ? 'success' : '')}>{pythonStatus || '尚未配置 Python 环境'}</p>
+                <label>桌面 Python 环境 <span>留空沿用上面的 Python；安装 desktop-automation-runtime，与 DrissionPage 分别检测</span></label>
+                <div className="setting-row"><input aria-label="桌面 Python 环境" value={settings.desktopPython || ''} placeholder="留空沿用 Python 环境" onChange={e => setSettings(s => ({...s, desktopPython: e.target.value}))}/>
+                    <button disabled={disabled} onClick={() => void execute('选择文件', () => pickExecutable('desktopPython'))}><FolderOpen size={15}/>选择</button>
+                    <button disabled={disabled} onClick={() => void execute('保存桌面环境', async () => { await invoke('save_settings', {settings}); setNotice('桌面环境已保存，进入桌面元素工作区检测'); })}>保存</button>
+                </div>
                 <label>浏览器路径 <span>留空时优先寻找本机 Chrome，其次 Edge；每次启动使用独立配置目录</span></label>
                 <div className="setting-row"><input value={settings.browser} placeholder="自动检测 Chrome / Edge"
                                                     onChange={e => setSettings(s => ({
@@ -384,6 +405,18 @@ export default function App() {
                     })}>保存
                     </button>
                 </div>
+                <label className="capture-window-setting">
+                    <input type="checkbox" checked={settings.hideCaptureWindow} disabled={disabled}
+                        onChange={e => {
+                            const next = {...settings, hideCaptureWindow: e.target.checked};
+                            void execute('保存设置', async () => {
+                                await invoke('save_settings', {settings: next});
+                                setSettings(next);
+                            });
+                        }}/>
+                    捕获元素隐藏窗口
+                    <span>捕获时最小化，结束后恢复；校验和回显高亮时最小化，5 秒后恢复。修改后自动保存</span>
+                </label>
             </section>}
             {!desktop &&
                 <div className="message warning">当前为界面预览。请使用 <code>npm run tauri dev</code> 启动桌面版以连接浏览器。
@@ -410,6 +443,10 @@ export default function App() {
                             {recorder.phase === 'paused' && <span className="count">暂停</span>}
                         </button>
                     </div>
+                    <button role="tab" aria-selected={workMode === 'desktop'} aria-controls="desktop-workspace" id="desktop-tab" className={'desktop-mode-tab ' + (workMode === 'desktop' ? 'active' : '')} disabled={disabled} onClick={() => void execute('切换桌面工作区', async () => {
+                        await recorder.finish(); if (capturing) { await invoke('set_capture', {active: false}); setCapturing(false); await restoreCaptureWindow(); } setWorkMode('desktop');
+                    })}><Monitor size={16}/>桌面元素</button>
+                    {workMode === 'desktop' ? <DesktopSources d={desk}/> : <>
                     <div className="pane-heading browser-group-heading">
                         <h2><button className="browser-group-toggle" aria-expanded={browsersExpanded}
                                     aria-controls="browser-instance-list"
@@ -454,12 +491,15 @@ export default function App() {
                                     setTabs([]);
                                 })}><Unplug size={15}/></button>
                     </div>
+                    </>}
+
                 </section>
                 <section className="editor-pane">
                     <h1 className="workspace-title">
-                        {workMode === 'elements' ? <Crosshair size={16}/> : workMode === 'network' ? <Radio size={16}/> : <CircleDot size={16}/>}
-                        {workMode === 'elements' ? '元素定位' : workMode === 'network' ? '网络监听' : '操作录制'}
+                        {workMode === 'desktop' ? <Monitor size={16}/> : workMode === 'elements' ? <Crosshair size={16}/> : workMode === 'network' ? <Radio size={16}/> : <CircleDot size={16}/>}
+                        {workMode === 'desktop' ? '桌面元素' : workMode === 'elements' ? '元素定位' : workMode === 'network' ? '网络监听' : '操作录制'}
                     </h1>
+                    {workMode === 'desktop' && <DesktopPanel d={desk}/>}
                     <div id="recording-workspace" role="tabpanel" aria-labelledby="recording-tab" hidden={workMode !== 'recording'}>
                         <RecordingPanel recorder={recorder} connected={!!tab && desktop} disabled={disabled}/>
                     </div>
@@ -542,8 +582,15 @@ export default function App() {
                                     </button>
                                     <button className={capturing ? '' : 'primary'} disabled={!tab || disabled || recorder.phase === 'recording'}
                                             onClick={() => void execute(capturing ? '停止捕获' : '开始捕获', async () => {
-                                                await invoke('set_capture', {active: !capturing});
-                                                setCapturing(!capturing);
+                                                if (capturing) {
+                                                    try { await invoke('set_capture', {active: false}); }
+                                                    finally { setCapturing(false); await restoreCaptureWindow(); }
+                                                    return;
+                                                }
+                                                captureWindowRestore.current = await hideCaptureWindow(settings.hideCaptureWindow);
+                                                setCapturing(true);
+                                                try { await invoke('set_capture', {active: true}); }
+                                                catch (e) { setCapturing(false); await restoreCaptureWindow(); throw e; }
                                             })}>{capturing ? <Square size={15}/> :
                                         <Crosshair size={15}/>} {capturing ? '停止' : '开始捕获'}</button>
                                     <button
@@ -570,11 +617,11 @@ export default function App() {
                                             className={'result-row ' + (selected?.token === el.token ? 'selected' : '')}
                                             key={el.token} disabled={disabled}
                                             onClick={() => void execute('定位元素', async () => {
-                                                await invoke('highlight', {
+                                                await previewWithHiddenWindow(settings.hideCaptureWindow, () => invoke('highlight', {
                                                     context: result.context,
                                                     tokens: [el.token],
                                                     scroll: true
-                                                });
+                                                }));
                                                 setActiveCaptureRecord(null);
                                                 setSelected({...el});
                                             })}><span className="result-index">{i + 1}</span>
@@ -590,8 +637,8 @@ export default function App() {
                     </div>
                 </section>
                 <DetailsResizer/>
-                <section id="details-pane" className={'details-pane' + (workMode === 'elements' ? ' element-details-pane' : workMode === 'recording' ? ' recording-details-pane' : '')}>
-                    {workMode === 'network' ? <NetworkDetails packet={networkPacket}/> : workMode === 'recording' ? <RecordingDetails recorder={recorder} disabled={disabled} pythonReady={pythonReady} connected={!!tab && desktop} capturing={capturing}/> : <>
+                <section id="details-pane" className={'details-pane' + (workMode === 'desktop' ? ' desktop-details-pane' : workMode === 'elements' ? ' element-details-pane' : workMode === 'recording' ? ' recording-details-pane' : '')}>
+                    {workMode === 'desktop' ? <DesktopDetails d={desk}/> : workMode === 'network' ? <NetworkDetails packet={networkPacket}/> : workMode === 'recording' ? <RecordingDetails recorder={recorder} disabled={disabled} pythonReady={pythonReady} connected={!!tab && desktop} capturing={capturing}/> : <>
                         <div className="pane-heading"><h2>元素详情</h2><Braces size={16}/></div>
                         <div className="element-details-body">
                         {!selected ? <div className="details-empty">
@@ -622,7 +669,7 @@ export default function App() {
             </main>
             <footer className="statusbar">
                 <div><span
-                    className={'status-dot ' + (tab ? 'online' : '')}/>{busy || notice || (tab ? '已连接 · 等待操作' : '就绪 · 请选择浏览器实例')}
+                    className={'status-dot ' + (tab ? 'online' : '')}/>{workMode === 'desktop' ? desk.busy || desk.notice || desk.status : busy || notice || (tab ? '已连接 · 等待操作' : '就绪 · 请选择浏览器实例')}
                 </div>
                 <span>Ctrl + 点击捕获 <kbd>Esc</kbd> 取消</span></footer>
         </div>

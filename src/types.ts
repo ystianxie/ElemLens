@@ -5,6 +5,6 @@ export type Capture = { context: Context; element: ElementInfo };
 export type Browser = { endpoint: string; name: string; version: string };
 export type Tab = { id: string; title: string; url: string };
 export type QueryResult = { matches: ElementInfo[]; total: number; engine: string; context: Context; truncated: boolean };
-export type Settings = { python: string; browser: string };
+export type Settings = { python: string; browser: string; desktopPython?: string; hideCaptureWindow: boolean };
 
 export type ElementGeometry = { x: number; y: number; width: number; height: number; centerX: number; centerY: number };
