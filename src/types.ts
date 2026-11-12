@@ -1,5 +1,6 @@
 export type Step = { kind: 'frame' | 'shadow'; selector: string };
-export type Context = { sessionId: string; contextId: number; frameId: string; documentToken: string; targetId?: string; steps: Step[] };
+export type ParentLocator = { mode: string; expression: string; token: string };
+export type Context = { sessionId: string; contextId: number; frameId: string; documentToken: string; targetId?: string; steps: Step[]; parents?: ParentLocator[] };
 export type ElementInfo = { token: string; tag: string; text: string; locatorText?: string; directTextNodes?: string[]; locatorTextTruncated?: boolean; attributes: Record<string,string>; css: string; xpath: string; visible: boolean; inViewport: boolean };
 export type Capture = { context: Context; element: ElementInfo };
 export type Browser = { endpoint: string; name: string; version: string };

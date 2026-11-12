@@ -96,6 +96,8 @@ impl Client {
     }
 }
 
+mod freeze;
+
 #[derive(Clone)]
 struct Context {
     session: String,
@@ -113,6 +115,10 @@ pub struct Connection {
     pub client: Arc<Client>,
     inner: RwLock<Inner>,
     active: AtomicBool,
+    capture_scope: RwLock<Option<Value>>,
+    freeze_armed: AtomicBool,
+    frozen: AtomicBool,
+    freeze: Mutex<freeze::FreezeState>,
     recording: AtomicBool,
     recording_receiving: AtomicBool,
     recording_id: Mutex<String>,
@@ -137,6 +143,10 @@ impl Connection {
             client,
             inner: RwLock::new(Inner::default()),
             active: AtomicBool::new(false),
+            capture_scope: RwLock::new(None),
+            freeze_armed: AtomicBool::new(false),
+            frozen: AtomicBool::new(false),
+            freeze: Mutex::new(freeze::FreezeState::default()),
             recording: AtomicBool::new(false),
             recording_receiving: AtomicBool::new(false),
             recording_id: Mutex::new(String::new()),
@@ -300,8 +310,10 @@ impl Connection {
                 let connection = self.clone();
                 tokio::spawn(async move {
                     let script = format!(
-                        "{AGENT}\nwindow.__elemlens_v1.setActive({});",
-                        connection.active.load(Ordering::Relaxed)
+                        "{AGENT}\nwindow.__elemlens_v1.setCaptureScope({});window.__elemlens_v1.setActive({});window.__elemlens_v1.setFreezeArmed({});",
+                        connection.capture_scope_config().await,
+                        connection.active.load(Ordering::Relaxed),
+                        connection.freeze_armed.load(Ordering::Relaxed)
                     );
                     if let Err(e) = connection.evaluate(&context, &script).await {
                         if connection.alive.load(Ordering::Relaxed) {
@@ -321,6 +333,7 @@ impl Connection {
                 if let Some(id) = params["executionContextId"].as_i64() {
                     self.inner.write().await.contexts.remove(&(session, id));
                 }
+                self.cancel_freeze_on_navigation();
                 self.emit("invalidated", Value::Null);
             }
             "Runtime.executionContextsCleared" => {
@@ -329,6 +342,7 @@ impl Connection {
                     .await
                     .contexts
                     .retain(|(s, _), _| s != &session);
+                self.cancel_freeze_on_navigation();
                 self.emit("invalidated", Value::Null);
             }
             "Page.frameAttached" => {
@@ -366,7 +380,30 @@ impl Connection {
                     self.client.close().await;
                 } else {
                     drop(inner);
+                    self.cancel_freeze_on_navigation();
                     self.emit("invalidated", Value::Null);
+                }
+            }
+            "Overlay.inspectNodeRequested" => {
+                if self.frozen.load(Ordering::Relaxed) && self.active.load(Ordering::Relaxed) {
+                    if let Some(node) = params["backendNodeId"].as_i64() {
+                        let connection = self.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = connection.capture_frozen_node(&session, node).await {
+                                let _ = connection.set_active(false).await;
+                                connection.emit("error", json!(e));
+                            }
+                        });
+                    }
+                }
+            }
+            "Overlay.inspectModeCanceled" => {
+                if self.frozen.load(Ordering::Relaxed) && self.active.load(Ordering::Relaxed) {
+                    let connection = self.clone();
+                    tokio::spawn(async move {
+                        let _ = connection.set_active(false).await;
+                        connection.emit("cancel", Value::Null);
+                    });
                 }
             }
             "Runtime.bindingCalled" if params["name"] == "__elemlens_bridge" => {
@@ -417,6 +454,24 @@ impl Connection {
                 };
                 let connection = self.clone();
                 tokio::spawn(async move {
+                    if payload["type"] == "freeze" {
+                        if let Err(e) = connection.confirm_freeze().await {
+                            connection.emit("error", json!(e));
+                        }
+                        return;
+                    }
+                    if payload["type"] == "freezeCancel" {
+                        if let Err(e) = connection.set_freeze(false).await {
+                            connection.emit("error", json!(e));
+                        }
+                        return;
+                    }
+                    if payload["type"] == "captureRejected" {
+                        if connection.active.load(Ordering::Relaxed) {
+                            connection.emit("capture-rejected", payload["message"].clone());
+                        }
+                        return;
+                    }
                     if payload["type"] == "cancel" {
                         let _ = connection.set_active(false).await;
                         connection.emit("cancel", Value::Null);
@@ -428,7 +483,7 @@ impl Connection {
                         return;
                     }
                     match connection
-                        .context_value(
+                        .capture_context(
                             &context,
                             payload["steps"].as_array().cloned().unwrap_or_default(),
                         )
@@ -470,20 +525,52 @@ impl Connection {
         if active && self.recording.load(Ordering::Relaxed) {
             return Err("请先暂停录制，再捕获单个元素".into());
         }
+        if active && self.freeze_armed.load(Ordering::Relaxed) {
+            return Err("请先确认或取消冻结，再捕获元素".into());
+        }
         self.active.store(active, Ordering::Relaxed);
         let contexts: Vec<_> = self.inner.read().await.contexts.values().cloned().collect();
         if active && contexts.is_empty() {
             return Err("页面尚未就绪，请稍后重试".into());
         }
+        let scope = self.capture_scope_config().await;
         for context in contexts {
-            let _ = self
-                .evaluate(
-                    &context,
-                    &format!("window.__elemlens_v1?.setActive({active})"),
-                )
-                .await;
+            let _ = self.evaluate(&context, &format!(
+                "window.__elemlens_v1?.setCaptureScope({scope});window.__elemlens_v1?.setActive({active})"
+            )).await;
+        }
+        if self.frozen.load(Ordering::Relaxed) {
+            self.set_frozen_picker(active).await?;
         }
         Ok(())
+    }
+    async fn capture_scope_config(&self) -> Value {
+        match self.capture_scope.read().await.as_ref() {
+            Some(scope) => json!({"documentToken":scope["documentToken"],"token":scope["parents"].as_array().and_then(|p| p.last()).map(|p| p["token"].clone())}),
+            None => Value::Null,
+        }
+    }
+    pub async fn set_capture_scope(&self, scope: Option<Value>) -> Result<(), String> {
+        if let Some(value) = &scope {
+            let context = self.check_context(value).await?.context;
+            let token = value["parents"].as_array().and_then(|p| p.last()).and_then(|p| p["token"].as_str()).ok_or("父级标识不可用，请重新校验")?;
+            let config = json!({"documentToken":value["documentToken"],"token":token});
+            if self.evaluate(&context, &format!("window.__elemlens_v1.setCaptureScope({config})")).await? != true {
+                return Err("父级元素已失效，请重新校验".into());
+            }
+        }
+        *self.capture_scope.write().await = scope;
+        Ok(())
+    }
+    async fn capture_context(&self, context: &Context, steps: Vec<Value>) -> Result<Value, String> {
+        let mut value = self.context_value(context, steps).await?;
+        if let Some(scope) = self.capture_scope.read().await.as_ref() {
+            if value["documentToken"] != scope["documentToken"] || value["steps"] != scope["steps"] {
+                return Err("不支持跨 iframe / Shadow Root 捕获，请返回对应查找上下文".into());
+            }
+            value["parents"] = scope["parents"].clone();
+        }
+        Ok(value)
     }
     async fn configure_recording(&self, context: &Context, version: u64) -> Result<(), String> {
         let context_value = self.context_value(context, vec![]).await?;
@@ -513,6 +600,9 @@ impl Connection {
             return Err("录制会话已改变，请重新开始".into());
         }
         let enable = matches!(action, "start" | "resume");
+        if enable && (self.frozen.load(Ordering::Relaxed) || self.freeze_armed.load(Ordering::Relaxed)) {
+            return Err("请先解除或取消冻结，再开始录制".into());
+        }
         let contexts: Vec<_> = self.inner.read().await.contexts.values().cloned().collect();
         if enable && contexts.is_empty() {
             return Err("页面尚未就绪，请稍后开始录制".into());
@@ -753,6 +843,14 @@ impl Connection {
         .await?;
         Ok(())
     }
+    pub async fn clear_highlights(&self) -> Result<(), String> {
+        let contexts: Vec<_> = self.inner.read().await.contexts.values().cloned().collect();
+        for context in contexts {
+            self.evaluate(&context, "window.__elemlens_v1?.highlight([], false)")
+                .await?;
+        }
+        Ok(())
+    }
     /// Convert the element's frame viewport rectangle to the selected page viewport.
     pub async fn element_geometry(&self, value: &Value, token: &str) -> Result<Value, String> {
         let original = self.check_context(value).await?.context;
@@ -869,6 +967,7 @@ impl Connection {
             "centerX":x+width/2.0,"centerY":y+height/2.0}))
     }
     pub async fn shutdown(&self) {
+        let _ = self.set_freeze(false).await;
         self.alive.store(false, Ordering::Relaxed);
         self.active.store(false, Ordering::Relaxed);
         let (contexts, scripts) = {

@@ -244,8 +244,34 @@ async fn stop_network_listener(
     state.network.stop(Some(&session_id)).await
 }
 #[tauri::command]
-async fn set_capture(state: State<'_, AppState>, active: bool) -> Result<(), String> {
-    selected(&state).await?.set_active(active).await
+async fn set_capture(
+    state: State<'_, AppState>, active: bool, python: Option<String>, context: Option<Value>,
+) -> Result<Option<Value>, String> {
+    let connection = selected(&state).await?;
+    if !active {
+        connection.set_active(false).await?;
+        connection.set_capture_scope(None).await?;
+        return Ok(None);
+    }
+    let scope = if let Some(context) = context.filter(|c| c["parents"].as_array().is_some_and(|p| !p.is_empty())) {
+        connection.check_context(&context).await?;
+        let python = python.filter(|p| !p.trim().is_empty()).ok_or("请先配置 Python 环境，以校验父级范围")?;
+        let result = python_request(&python, json!({"action":"resolve_scope","endpoint":connection.endpoint,
+            "targetId":connection.target,"context":context})).await?;
+        connection.check_context(&result["context"]).await?;
+        Some(result["context"].clone())
+    } else { None };
+    connection.set_capture_scope(scope.clone()).await?;
+    if let Err(error) = connection.set_active(true).await {
+        let _ = connection.set_active(false).await;
+        return Err(error);
+    }
+    Ok(scope)
+}
+#[tauri::command]
+async fn set_freeze(state: State<'_, AppState>, active: bool) -> Result<(), String> {
+    let _guard = state.operation.lock().await;
+    selected(&state).await?.set_freeze(active).await
 }
 #[tauri::command]
 async fn set_recording(
@@ -274,6 +300,12 @@ async fn highlight(
         .await?
         .highlight(&context, tokens, scroll)
         .await
+}
+
+#[tauri::command]
+async fn clear_highlights(state: State<'_, AppState>) -> Result<(), String> {
+    let _guard = state.operation.lock().await;
+    selected(&state).await?.clear_highlights().await
 }
 
 #[tauri::command]
@@ -455,12 +487,18 @@ async fn browser_paths() -> Vec<String> {
     paths
 }
 #[tauri::command]
-async fn launch_browser(app: tauri::AppHandle, browser: String) -> Result<String, String> {
+async fn launch_browser(
+    app: tauri::AppHandle,
+    browser: String,
+    port: Option<u16>,
+) -> Result<String, String> {
     let path = PathBuf::from(&browser);
     if !path.is_file() {
         return Err("请选择 Chrome 或 Edge 的可执行文件".into());
     }
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let requested_port = port.unwrap_or(0);
+    let listener = std::net::TcpListener::bind(("127.0.0.1", requested_port))
+        .map_err(|e| format!("CDP 端口 {requested_port} 无法使用：{e}"))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     drop(listener);
     let profiles = app
@@ -493,12 +531,19 @@ async fn launch_browser(app: tauri::AppHandle, browser: String) -> Result<String
         .spawn()
         .map_err(|e| format!("启动浏览器失败：{e}"))?;
     let address = format!("http://127.0.0.1:{port}");
+    wait_for_browser(&mut child, &address).await?;
+    Ok(address)
+}
+async fn wait_for_browser(child: &mut tokio::process::Child, address: &str) -> Result<(), String> {
     for _ in 0..30 {
-        if inspect_browser(address.clone()).await.is_ok() {
-            return Ok(address);
+        if inspect_browser(address.to_string()).await.is_ok() {
+            return Ok(());
         }
         if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!("浏览器启动后退出：{status}"));
+            // A launcher may exit successfully before the browser's CDP endpoint is ready.
+            if !status.success() {
+                return Err(format!("浏览器启动后退出：{status}"));
+            }
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
@@ -521,11 +566,13 @@ fn main() {
             select_tab,
             disconnect,
             set_capture,
+            set_freeze,
             set_recording,
             start_network_listener,
             stop_network_listener,
             root_context,
             highlight,
+            clear_highlights,
             element_geometry,
             check_python,
             query,
@@ -575,6 +622,79 @@ mod tests {
         assert!(endpoint("http://example.com:9222").is_err());
         assert!(endpoint("http://127.0.0.1:9222/path").is_err());
     }
+    async fn exited_launcher(code: u32) -> tokio::process::Child {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("cmd.exe");
+            command.args(["/C", &format!("exit {code}")]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = Command::new("sh");
+            command.args(["-c", &format!("exit {code}")]);
+            command
+        };
+        hidden(&mut command);
+        let mut child = command.spawn().unwrap();
+        child.wait().await.unwrap();
+        child
+    }
+
+    async fn cdp_server(statuses: Vec<u16>) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for status in statuses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                stream.read(&mut request).await.unwrap();
+                let body = r#"{"Browser":"Chrome/test","webSocketDebuggerUrl":"ws://127.0.0.1/devtools/browser/test"}"#;
+                let response = format!(
+                    "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (address, server)
+    }
+
+    #[tokio::test]
+    async fn successful_launcher_exit_waits_for_cdp() {
+        let mut child = exited_launcher(0).await;
+        let (address, server) = cdp_server(vec![503, 200]).await;
+        wait_for_browser(&mut child, &address).await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ready_cdp_takes_precedence_over_launcher_exit() {
+        let mut child = exited_launcher(1).await;
+        let (address, server) = cdp_server(vec![200]).await;
+        wait_for_browser(&mut child, &address).await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_launcher_exit_reports_error_when_cdp_is_unavailable() {
+        let mut child = exited_launcher(1).await;
+        let (address, server) = cdp_server(vec![503]).await;
+        let error = wait_for_browser(&mut child, &address).await.unwrap_err();
+        assert!(error.starts_with("浏览器启动后退出："), "{error}");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn successful_launcher_exit_still_requires_a_ready_cdp_endpoint() {
+        let mut child = exited_launcher(0).await;
+        let (address, server) = cdp_server(vec![503; 30]).await;
+        let error = wait_for_browser(&mut child, &address).await.unwrap_err();
+        assert!(error.contains("调试端口未就绪"), "{error}");
+        server.await.unwrap();
+    }
+
     #[tokio::test]
     async fn bad_python() {
         assert!(

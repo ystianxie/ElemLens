@@ -1,5 +1,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
+import {launchBrowser} from './browser-launch';
+import {FreezeHelp} from './FreezeHelp';
 import {listen} from '@tauri-apps/api/event';
 import {open} from '@tauri-apps/plugin-dialog';
 import {
@@ -13,7 +15,9 @@ import {
     Copy,
     Crosshair,
     ExternalLink,
+    Eraser,
     FolderOpen,
+    Snowflake,
     Layers,
     Monitor,
     MousePointer2,
@@ -51,6 +55,7 @@ export default function App() {
     const [settings, setSettings] = useState<Settings>(emptySettings), [showSettings, setShowSettings] = useState(false), [pythonStatus, setPythonStatus] = useState('');
     const [pythonReady, setPythonReady] = useState(false), [busy, setBusy] = useState(''), [error, setError] = useState(''), [notice, setNotice] = useState('');
     const [capturing, setCapturing] = useState(false), [capture, setCapture] = useState<Capture | null>(null), [result, setResult] = useState<QueryResult | null>(null), [selected, setSelected] = useState<ElementInfo | null>(null);
+    const [freezePhase, setFreezePhase] = useState<'idle' | 'armed' | 'frozen'>('idle');
     const [context, setContext] = useState<Context | null>(null), [mode, setMode] = useState('CSS'), [expression, setExpression] = useState(''), [copied, setCopied] = useState('');
     const [browsersExpanded, setBrowsersExpanded] = useState(true);
     const [workMode, setWorkMode] = useState<'elements' | 'network' | 'recording' | 'desktop'>('elements');
@@ -68,9 +73,29 @@ export default function App() {
         captureWindowRestore.current = null;
         if (restore) await restore();
     }, []);
-    const reportWindowRestore = () => { void restoreCaptureWindow().catch(e => setError(String(e))); };
-    const recorder = useRecording({endpoint:browser?.endpoint ?? '', target:tab?.id ?? '', title:tab?.title ?? '', url:tab?.url ?? ''}, () => { setCapturing(false); reportWindowRestore(); }, {python:settings.python,ready:pythonReady,capturing,hideCaptureWindow:settings.hideCaptureWindow});
-    const desk = useDesktop({active: workMode === 'desktop', python: settings.desktopPython?.trim() || settings.python, available: desktop, hideWindow: settings.hideCaptureWindow});
+    const reportWindowRestore = () => {
+        void restoreCaptureWindow().catch(e => setError(String(e)));
+    };
+    const recorder = useRecording({
+        endpoint: browser?.endpoint ?? '',
+        target: tab?.id ?? '',
+        title: tab?.title ?? '',
+        url: tab?.url ?? ''
+    }, () => {
+        setCapturing(false);
+        reportWindowRestore();
+    }, {
+        python: settings.python,
+        ready: pythonReady,
+        capturing: capturing || freezePhase !== 'idle',
+        hideCaptureWindow: settings.hideCaptureWindow
+    });
+    const desk = useDesktop({
+        active: workMode === 'desktop',
+        python: settings.desktopPython?.trim() || settings.python,
+        available: desktop,
+        hideWindow: settings.hideCaptureWindow
+    });
     const current = useRef({endpoint: '', target: ''}), generation = useRef(0), pythonGeneration = useRef(0),
         working = useRef(false);
     const execute = useCallback(async (label: string, task: () => Promise<void>) => {
@@ -98,6 +123,7 @@ export default function App() {
         setResult(null);
         setSelected(null);
         setCapturing(false);
+        setFreezePhase('idle');
     };
     useEffect(() => {
         if (!desktop) return;
@@ -110,7 +136,12 @@ export default function App() {
         }>('browser-event', ({payload: event}) => {
             if (disposed || event.endpoint !== current.current.endpoint || event.targetId !== current.current.target) return;
             if (['capture', 'cancel', 'disconnected', 'error'].includes(event.kind)) reportWindowRestore();
-            if (event.kind === 'capture') {
+            if (event.kind === 'freeze') {
+                const phase = event.data as 'idle' | 'armed' | 'frozen';
+                setFreezePhase(phase);
+                if (phase !== 'armed') reportWindowRestore();
+                setNotice(phase === 'frozen' ? '浮窗已冻结，可捕获元素或校验；完成后请解除冻结' : phase === 'armed' ? '展开浮窗，按 Alt + 鼠标左键确认冻结，Esc 取消' : '已解除或取消冻结');
+            } else if (event.kind === 'capture') {
                 const value = event.data as Capture;
                 const rows = defaultDpConditions(value.element);
                 const record: CaptureRecord = {
@@ -152,6 +183,8 @@ export default function App() {
                 clearPage();
                 setTab(null);
                 setError('浏览器或标签页已断开，请重新选择标签页');
+            } else if (event.kind === 'capture-rejected') {
+                setNotice(String(event.data));
             } else if (event.kind === 'error') {
                 setError(String(event.data));
                 setCapturing(false);
@@ -180,7 +213,8 @@ export default function App() {
         });
         return () => {
             disposed = true;
-            void restoreCaptureWindow().catch(() => {});
+            void restoreCaptureWindow().catch(() => {
+            });
             void unlisten.then(fn => fn());
         };
     }, []);
@@ -268,12 +302,15 @@ export default function App() {
         }
         await invoke('save_settings', {settings: {...settings, browser: path}});
         setSettings(s => ({...s, browser: path}));
-        const endpoint = await invoke<string>('launch_browser', {browser: path});
+        const endpoint = await launchBrowser(path, address);
         await connect(endpoint);
     }
 
     async function runQuery() {
-        if (activeCaptureRecord && !isLiveCapture(activeCaptureRecord, {...current.current, generation: generation.current})) {
+        if (activeCaptureRecord && !isLiveCapture(activeCaptureRecord, {
+            ...current.current,
+            generation: generation.current
+        })) {
             throw Error('正在查看历史快照，请重新捕获元素后校验');
         }
         return previewWithHiddenWindow(settings.hideCaptureWindow, async () => {
@@ -282,14 +319,48 @@ export default function App() {
             setResult(null);
             setSelected(null);
             const scope = context ?? await invoke<Context>('root_context');
-            const value = await invoke<QueryResult>('query', {python: settings.python, context: scope, mode, expression});
+            const value = await invoke<QueryResult>('query', {
+                python: settings.python,
+                context: scope,
+                mode,
+                expression
+            });
             if (g !== generation.current) return;
-            setContext(scope);
+            setContext(value.context);
             setResult(value);
             setSelected(value.matches[0] ?? null);
-            await invoke('highlight', {context: scope, tokens: value.matches.map(e => e.token), scroll: false});
-            setNotice(value.total ? `已通过 ${value.engine} 找到 ${value.total} 个元素` : '未找到匹配元素');
+            await invoke('highlight', {context: value.context, tokens: value.matches.map(e => e.token), scroll: false});
+            setNotice(value.total ? `已通过 ${value.engine} 在${value.context.parents?.length ? '当前父级内' : '当前文档中'}找到 ${value.total} 个元素` : '当前查找范围内未找到匹配元素');
         });
+    }
+
+    function clearLocator(nextContext: Context) {
+        editingCaptureId.current = null;
+        setActiveCaptureRecord(null);
+        setContext(nextContext);
+        setCapture(null);
+        setResult(null);
+        setSelected(null);
+        setDpConditions([]);
+        setExpression('');
+        setCopied('');
+        setError('');
+    }
+
+    async function useAsParent() {
+        if (!result || result.total !== 1 || !result.matches[0]) return;
+        await invoke('clear_highlights');
+        clearLocator({...result.context, parents: [...(result.context.parents ?? []), {
+            mode, expression, token: result.matches[0].token
+        }]});
+        setNotice('已设为父级，请捕获或输入下一层定位表达式');
+    }
+
+    async function removeParents(count: number) {
+        if (!context) return;
+        await invoke('clear_highlights');
+        clearLocator({...context, parents: (context.parents ?? []).slice(0, count)});
+        setNotice(count ? '已返回上一级父级范围' : '已清空父级，返回当前文档范围');
     }
 
     function restoreCapture(record: CaptureRecord) {
@@ -328,6 +399,24 @@ export default function App() {
         setCopied('');
     }
 
+    async function toggleFreeze() {
+        if (freezePhase !== 'idle') {
+            try {
+                await invoke('set_freeze', {active: false});
+            } finally {
+                await restoreCaptureWindow();
+            }
+            return;
+        }
+        captureWindowRestore.current = await hideCaptureWindow(settings.hideCaptureWindow);
+        try {
+            await invoke('set_freeze', {active: true});
+        } catch (e) {
+            await restoreCaptureWindow();
+            throw e;
+        }
+    }
+
     async function copy(text: string, key: string) {
         await navigator.clipboard.writeText(text);
         setCopied(key);
@@ -343,25 +432,29 @@ export default function App() {
         <div className="workspace">
             <Titlebar desktop={desktop} settingsOpen={showSettings} onSettingsToggle={() => setShowSettings(v => !v)}
                       onError={setError}/>
-            {workMode === 'desktop' ? <div className="connection-bar desktop-connection"><strong>Windows 桌面元素</strong><span>{desk.status}</span><span className="connection-hint">{desk.backend.toUpperCase()} · 外部 Python 环境</span></div> : <div className="connection-bar">
-                <div className="address-input"><span>CDP</span><input aria-label="调试地址" value={address}
-                                                                      onChange={e => setAddress(e.target.value)}
-                                                                      placeholder="127.0.0.1:9222" onKeyDown={e => {
-                    if (e.key === 'Enter' && !disabled) void execute('连接中', () => connect(address));
-                }}/></div>
-                <button disabled={!desktop || disabled} className="primary"
-                        onClick={() => void execute('连接中', () => connect(address))}>连接<ArrowRight size={15}/>
-                </button>
-                <button disabled={!desktop || disabled} onClick={() => void execute('发现中', async () => {
-                    const found = await invoke<Browser[]>('discover_browsers');
-                    setBrowsers(found);
-                    setNotice(found.length ? `发现 ${found.length} 个浏览器实例` : '未发现调试实例，可手填端口或启动浏览器');
-                })}><RefreshCw size={15} className={busy === '发现中' ? 'spin' : ''}/>发现实例
-                </button>
-                <div className="bar-separator"/>
-                <button disabled={!desktop || disabled} onClick={() => void execute('启动中', launch)}><Plus size={16}/>启动浏览器
-                </button>
-                <span className="connection-hint">无需浏览器插件</span></div>}
+            {workMode === 'desktop' ? <div className="connection-bar desktop-connection"><strong>Windows
+                    桌面元素</strong><span>{desk.status}</span><span
+                    className="connection-hint">{desk.backend.toUpperCase()} · 外部 Python 环境</span></div> :
+                <div className="connection-bar">
+                    <div className="address-input"><span>CDP</span><input aria-label="调试地址" value={address}
+                                                                          onChange={e => setAddress(e.target.value)}
+                                                                          placeholder="127.0.0.1:9222" onKeyDown={e => {
+                        if (e.key === 'Enter' && !disabled) void execute('连接中', () => connect(address));
+                    }}/></div>
+                    <button disabled={!desktop || disabled} className="primary"
+                            onClick={() => void execute('连接中', () => connect(address))}>连接<ArrowRight size={15}/>
+                    </button>
+                    <button disabled={!desktop || disabled} onClick={() => void execute('发现中', async () => {
+                        const found = await invoke<Browser[]>('discover_browsers');
+                        setBrowsers(found);
+                        setNotice(found.length ? `发现 ${found.length} 个浏览器实例` : '未发现调试实例，可手填端口或启动浏览器');
+                    })}><RefreshCw size={15} className={busy === '发现中' ? 'spin' : ''}/>发现实例
+                    </button>
+                    <div className="bar-separator"/>
+                    <button disabled={!desktop || disabled} onClick={() => void execute('启动中', launch)}><Plus
+                        size={16}/>启动浏览器
+                    </button>
+                    <span className="connection-hint">无需浏览器插件</span></div>}
             {showSettings && <section className="settings-panel">
                 <div className="section-title"><h3><Settings2 size={17}/>运行环境</h3>
                     <button title="收起设置" className="icon-button" onClick={() => setShowSettings(false)}><X
@@ -384,10 +477,23 @@ export default function App() {
                     </button>
                 </div>
                 <p className={'environment-status ' + (pythonReady ? 'success' : '')}>{pythonStatus || '尚未配置 Python 环境'}</p>
-                <label>桌面 Python 环境 <span>留空沿用上面的 Python；安装 desktop-automation-runtime，与 DrissionPage 分别检测</span></label>
-                <div className="setting-row"><input aria-label="桌面 Python 环境" value={settings.desktopPython || ''} placeholder="留空沿用 Python 环境" onChange={e => setSettings(s => ({...s, desktopPython: e.target.value}))}/>
-                    <button disabled={disabled} onClick={() => void execute('选择文件', () => pickExecutable('desktopPython'))}><FolderOpen size={15}/>选择</button>
-                    <button disabled={disabled} onClick={() => void execute('保存桌面环境', async () => { await invoke('save_settings', {settings}); setNotice('桌面环境已保存，进入桌面元素工作区检测'); })}>保存</button>
+                <label>桌面 Python
+                    环境 <span>留空沿用上面的 Python；安装 desktop-automation-runtime，与 DrissionPage 分别检测</span></label>
+                <div className="setting-row"><input aria-label="桌面 Python 环境" value={settings.desktopPython || ''}
+                                                    placeholder="留空沿用 Python 环境"
+                                                    onChange={e => setSettings(s => ({
+                                                        ...s,
+                                                        desktopPython: e.target.value
+                                                    }))}/>
+                    <button disabled={disabled}
+                            onClick={() => void execute('选择文件', () => pickExecutable('desktopPython'))}><FolderOpen
+                        size={15}/>选择
+                    </button>
+                    <button disabled={disabled} onClick={() => void execute('保存桌面环境', async () => {
+                        await invoke('save_settings', {settings});
+                        setNotice('桌面环境已保存，进入桌面元素工作区检测');
+                    })}>保存
+                    </button>
                 </div>
                 <label>浏览器路径 <span>留空时优先寻找本机 Chrome，其次 Edge；每次启动使用独立配置目录</span></label>
                 <div className="setting-row"><input value={settings.browser} placeholder="自动检测 Chrome / Edge"
@@ -407,13 +513,13 @@ export default function App() {
                 </div>
                 <label className="capture-window-setting">
                     <input type="checkbox" checked={settings.hideCaptureWindow} disabled={disabled}
-                        onChange={e => {
-                            const next = {...settings, hideCaptureWindow: e.target.checked};
-                            void execute('保存设置', async () => {
-                                await invoke('save_settings', {settings: next});
-                                setSettings(next);
-                            });
-                        }}/>
+                           onChange={e => {
+                               const next = {...settings, hideCaptureWindow: e.target.checked};
+                               void execute('保存设置', async () => {
+                                   await invoke('save_settings', {settings: next});
+                                   setSettings(next);
+                               });
+                           }}/>
                     捕获元素隐藏窗口
                     <span>捕获时最小化，结束后恢复；校验和回显高亮时最小化，5 秒后恢复。修改后自动保存</span>
                 </label>
@@ -423,6 +529,11 @@ export default function App() {
                 </div>}
             {error && <div className="message error" role="alert"><span>{error}</span>
                 <button title="关闭提示" onClick={() => setError('')}><X size={15}/></button>
+            </div>}
+            {freezePhase !== 'idle' && <div className="message freeze-message" role="status">
+                <span>{freezePhase === 'armed' ? '展开浮窗，按 Alt + 鼠标左键确认冻结；Esc 取消。' : '浮窗已冻结，网页交互与定时更新已暂停。捕获或校验完成后，请解除冻结。'}</span>
+                <button onClick={() => void execute('解除冻结', toggleFreeze)}
+                        disabled={disabled}>{freezePhase === 'armed' ? '取消冻结' : '解除冻结'}</button>
             </div>}
             <main className="workbench">
                 <section className="browser-pane">
@@ -439,68 +550,84 @@ export default function App() {
                         <button role="tab" aria-selected={workMode === 'recording'} aria-controls="recording-workspace"
                                 id="recording-tab" className={workMode === 'recording' ? 'active' : ''}
                                 onClick={() => setWorkMode('recording')}><CircleDot size={16}/>操作录制
-                            {recorder.phase === 'recording' && <span className="recording-tab-dot" aria-label="正在录制">●</span>}
+                            {recorder.phase === 'recording' &&
+                                <span className="recording-tab-dot" aria-label="正在录制">●</span>}
                             {recorder.phase === 'paused' && <span className="count">暂停</span>}
                         </button>
                     </div>
-                    <button role="tab" aria-selected={workMode === 'desktop'} aria-controls="desktop-workspace" id="desktop-tab" className={'desktop-mode-tab ' + (workMode === 'desktop' ? 'active' : '')} disabled={disabled} onClick={() => void execute('切换桌面工作区', async () => {
-                        await recorder.finish(); if (capturing) { await invoke('set_capture', {active: false}); setCapturing(false); await restoreCaptureWindow(); } setWorkMode('desktop');
-                    })}><Monitor size={16}/>桌面元素</button>
+                    <button role="tab" aria-selected={workMode === 'desktop'} aria-controls="desktop-workspace"
+                            id="desktop-tab" className={'desktop-mode-tab ' + (workMode === 'desktop' ? 'active' : '')}
+                            disabled={disabled} onClick={() => void execute('切换桌面工作区', async () => {
+                        await recorder.finish();
+                        if (capturing) {
+                            await invoke('set_capture', {active: false});
+                            setCapturing(false);
+                            await restoreCaptureWindow();
+                        }
+                        setWorkMode('desktop');
+                    })}><Monitor size={16}/>桌面元素
+                    </button>
                     {workMode === 'desktop' ? <DesktopSources d={desk}/> : <>
-                    <div className="pane-heading browser-group-heading">
-                        <h2><button className="browser-group-toggle" aria-expanded={browsersExpanded}
-                                    aria-controls="browser-instance-list"
-                                    onClick={() => setBrowsersExpanded(expanded => !expanded)}>
-                            <ChevronDown size={14} className={browsersExpanded ? '' : 'collapsed'}/>
-                            浏览器实例<span className="count">{browsers.length}</span>
-                        </button></h2>
-                    </div>
-                    <div id="browser-instance-list" className="browser-list" hidden={!browsersExpanded}>{browsers.length === 0 ?
-                        <div className="sidebar-empty"><Monitor size={28}/><p>连接你的浏览器</p><span>发现已开放调试端口的实例，<br/>或启动一个新的开发浏览器。</span>
-                        </div> : browsers.map(b => <button
-                            className={'browser-item ' + (browser?.endpoint === b.endpoint ? 'selected' : '')}
-                            key={b.endpoint} disabled={disabled}
-                            onClick={() => void execute('连接中', () => connect(b.endpoint))}>
-                            <div className="browser-icon"><Monitor size={18}/></div>
-                            <div><strong>{b.name}</strong><small>{b.endpoint.replace('http://', '')}</small></div>
-                            <span className={'status-dot ' + (browser?.endpoint === b.endpoint ? 'online' : '')}/>
-                        </button>)}</div>
-                    <div className="pane-heading tab-heading"><h2>标签页</h2>
-                        <button className="icon-button" title="刷新标签页" disabled={!browser || disabled}
-                                onClick={() => void execute('刷新标签页', async () => setTabs(await invoke<Tab[]>('list_tabs', {address: browser!.endpoint})))}>
-                            <RefreshCw size={14}/></button>
-                    </div>
-                    <div className="tab-list">{tabs.length === 0 ?
-                        <p className="small-empty">连接实例后在这里选择标签页</p> : tabs.map(t => <button
-                            className={'tab-item ' + (tab?.id === t.id ? 'selected' : '')} key={t.id}
-                            disabled={disabled} onClick={() => void execute('接入标签页', () => chooseTab(t))}>
-                            <div className="tab-icon"><ExternalLink size={15}/></div>
-                            <div><strong>{t.title || '未命名标签页'}</strong><small>{t.url}</small></div>
-                            {tab?.id === t.id && <ChevronRight size={14}/>}</button>)}</div>
-                    <div className="browser-pane-footer"><span
-                        className={'status-dot ' + (browser ? 'online' : '')}/>{browser ? '调试端口已连接' : '等待连接'}
-                        <button className="icon-button" title="断开连接" disabled={!browser || disabled}
-                                onClick={() => void execute('断开连接', async () => {
-                                    await recorder.finish();
-                                    generation.current++;
-                                    current.current = {endpoint: '', target: ''};
-                                    await invoke('disconnect');
-                                    clearPage();
-                                    setBrowser(null);
-                                    setTab(null);
-                                    setTabs([]);
-                                })}><Unplug size={15}/></button>
-                    </div>
+                        <div className="pane-heading browser-group-heading">
+                            <h2>
+                                <button className="browser-group-toggle" aria-expanded={browsersExpanded}
+                                        aria-controls="browser-instance-list"
+                                        onClick={() => setBrowsersExpanded(expanded => !expanded)}>
+                                    <ChevronDown size={14} className={browsersExpanded ? '' : 'collapsed'}/>
+                                    浏览器实例<span className="count">{browsers.length}</span>
+                                </button>
+                            </h2>
+                        </div>
+                        <div id="browser-instance-list" className="browser-list"
+                             hidden={!browsersExpanded}>{browsers.length === 0 ?
+                            <div className="sidebar-empty"><Monitor size={28}/><p>连接你的浏览器</p><span>发现已开放调试端口的实例，<br/>或启动一个新的开发浏览器。</span>
+                            </div> : browsers.map(b => <button
+                                className={'browser-item ' + (browser?.endpoint === b.endpoint ? 'selected' : '')}
+                                key={b.endpoint} disabled={disabled}
+                                onClick={() => void execute('连接中', () => connect(b.endpoint))}>
+                                <div className="browser-icon"><Monitor size={18}/></div>
+                                <div><strong>{b.name}</strong><small>{b.endpoint.replace('http://', '')}</small></div>
+                                <span className={'status-dot ' + (browser?.endpoint === b.endpoint ? 'online' : '')}/>
+                            </button>)}</div>
+                        <div className="pane-heading tab-heading"><h2>标签页</h2>
+                            <button className="icon-button" title="刷新标签页" disabled={!browser || disabled}
+                                    onClick={() => void execute('刷新标签页', async () => setTabs(await invoke<Tab[]>('list_tabs', {address: browser!.endpoint})))}>
+                                <RefreshCw size={14}/></button>
+                        </div>
+                        <div className="tab-list">{tabs.length === 0 ?
+                            <p className="small-empty">连接实例后在这里选择标签页</p> : tabs.map(t => <button
+                                className={'tab-item ' + (tab?.id === t.id ? 'selected' : '')} key={t.id}
+                                disabled={disabled} onClick={() => void execute('接入标签页', () => chooseTab(t))}>
+                                <div className="tab-icon"><ExternalLink size={15}/></div>
+                                <div><strong>{t.title || '未命名标签页'}</strong><small>{t.url}</small></div>
+                                {tab?.id === t.id && <ChevronRight size={14}/>}</button>)}</div>
+                        <div className="browser-pane-footer"><span
+                            className={'status-dot ' + (browser ? 'online' : '')}/>{browser ? '调试端口已连接' : '等待连接'}
+                            <button className="icon-button" title="断开连接" disabled={!browser || disabled}
+                                    onClick={() => void execute('断开连接', async () => {
+                                        await recorder.finish();
+                                        generation.current++;
+                                        current.current = {endpoint: '', target: ''};
+                                        await invoke('disconnect');
+                                        clearPage();
+                                        setBrowser(null);
+                                        setTab(null);
+                                        setTabs([]);
+                                    })}><Unplug size={15}/></button>
+                        </div>
                     </>}
 
                 </section>
                 <section className="editor-pane">
                     <h1 className="workspace-title">
-                        {workMode === 'desktop' ? <Monitor size={16}/> : workMode === 'elements' ? <Crosshair size={16}/> : workMode === 'network' ? <Radio size={16}/> : <CircleDot size={16}/>}
+                        {workMode === 'desktop' ? <Monitor size={16}/> : workMode === 'elements' ?
+                            <Crosshair size={16}/> : workMode === 'network' ? <Radio size={16}/> :
+                                <CircleDot size={16}/>}
                         {workMode === 'desktop' ? '桌面元素' : workMode === 'elements' ? '元素定位' : workMode === 'network' ? '网络监听' : '操作录制'}
                     </h1>
                     {workMode === 'desktop' && <DesktopPanel d={desk}/>}
-                    <div id="recording-workspace" role="tabpanel" aria-labelledby="recording-tab" hidden={workMode !== 'recording'}>
+                    <div id="recording-workspace" role="tabpanel" aria-labelledby="recording-tab"
+                         hidden={workMode !== 'recording'}>
                         <RecordingPanel recorder={recorder} connected={!!tab && desktop} disabled={disabled}/>
                     </div>
                     <div id="network-workspace" role="tabpanel" aria-labelledby="network-tab"
@@ -519,7 +646,22 @@ export default function App() {
                                     <Layers
                                         size={12}/>{scopeLabel}</div>
                             </div>
-                            {historySnapshot && <p className="capture-snapshot-note" role="status">正在查看历史快照。可编辑、复制定位表达式；重新捕获元素后可校验与高亮。</p>}
+                            {!!scope?.parents?.length && <div className="parent-scope" aria-label="父级查找范围">
+                                <div className="parent-scope-path"><span>查找范围</span><span>当前文档</span>
+                                    {scope.parents.map((parent, index) => <span className="parent-scope-step" key={index}
+                                        title={`${parent.mode}: ${parent.expression}`}><ChevronRight size={12}/>
+                                        <code>{parent.expression}</code></span>)}
+                                </div>
+                                <div className="parent-scope-actions">
+                                    <span>仅查找内部后代 · 不跨 iframe / Shadow Root</span>
+                                    <button disabled={disabled || capturing || freezePhase === 'armed' || historySnapshot}
+                                        onClick={() => void execute('返回上一级', () => removeParents(scope.parents!.length - 1))}>返回上一级</button>
+                                    <button disabled={disabled || capturing || freezePhase === 'armed' || historySnapshot}
+                                        onClick={() => void execute('清空父级', () => removeParents(0))}>清空父级</button>
+                                </div>
+                            </div>}
+                            {historySnapshot && <p className="capture-snapshot-note"
+                                                   role="status">正在查看历史快照。可编辑、复制定位表达式；重新捕获元素后可校验与高亮。</p>}
                             <div className="mode-tabs">{['CSS', 'XPath', 'DP'].map(m => <button
                                 className={mode === m ? 'active' : ''} key={m} disabled={disabled || capturing}
                                 onClick={() => changeMode(m)}>{m === 'DP' ? 'DrissionPage' : m}</button>)}<span
@@ -571,7 +713,7 @@ export default function App() {
                                         {copied === 'locator' ? <Check size={15}/> : <Copy size={15}/>}
                                     </button>
                                     <button className="copy-action"
-                                            title={copied === 'code' ? '已复制 DP 代码' : '复制 DP 代码（包含 iframe / Shadow Root 上下文）'}
+                                            title={copied === 'code' ? '已复制 DP 代码' : '复制 DP 代码（包含父级链和 iframe / Shadow Root 上下文）'}
                                             aria-label="复制 DP 代码"
                                             disabled={!browser || !tab || !expression.trim() || disabled || capturing}
                                             onClick={() => void execute('复制', () => copy(dpCode(scope, mode, expression, {
@@ -580,23 +722,56 @@ export default function App() {
                                             }), 'code'))}>
                                         {copied === 'code' ? <Check size={15}/> : <Code2 size={15}/>}
                                     </button>
-                                    <button className={capturing ? '' : 'primary'} disabled={!tab || disabled || recorder.phase === 'recording'}
+
+                                    <div className="freeze-control">
+                                        <button className={freezePhase !== 'idle' ? 'freeze-active' : ''}
+                                                disabled={!tab || disabled || capturing || recorder.phase === 'recording'}
+                                                onClick={() => void execute(freezePhase === 'idle' ? '准备冻结' : '解除冻结', toggleFreeze)}>
+                                            <Snowflake
+                                                size={15}/>{freezePhase === 'idle' ? '冻结浮窗' : freezePhase === 'armed' ? '取消冻结' : '解除冻结'}
+                                        </button>
+                                        <FreezeHelp/>
+                                    </div>
+                                    <button className={capturing ? '' : 'primary'}
+                                            disabled={!tab || disabled || recorder.phase === 'recording' || freezePhase === 'armed'}
                                             onClick={() => void execute(capturing ? '停止捕获' : '开始捕获', async () => {
                                                 if (capturing) {
-                                                    try { await invoke('set_capture', {active: false}); }
-                                                    finally { setCapturing(false); await restoreCaptureWindow(); }
+                                                    try {
+                                                        await invoke('set_capture', {active: false});
+                                                    } finally {
+                                                        setCapturing(false);
+                                                        await restoreCaptureWindow();
+                                                    }
                                                     return;
                                                 }
                                                 captureWindowRestore.current = await hideCaptureWindow(settings.hideCaptureWindow);
                                                 setCapturing(true);
-                                                try { await invoke('set_capture', {active: true}); }
-                                                catch (e) { setCapturing(false); await restoreCaptureWindow(); throw e; }
+                                                try {
+                                                    const nextScope = await invoke<Context | null>('set_capture', {
+                                                        active: true, python: settings.python, context: historySnapshot ? null : scope
+                                                    });
+                                                    if (nextScope) setContext(nextScope);
+                                                } catch (e) {
+                                                    setCapturing(false);
+                                                    await restoreCaptureWindow();
+                                                    throw e;
+                                                }
                                             })}>{capturing ? <Square size={15}/> :
                                         <Crosshair size={15}/>} {capturing ? '停止' : '开始捕获'}</button>
                                     <button
-                                        disabled={!tab || !pythonReady || !expression.trim() || disabled || capturing || historySnapshot}
+                                        disabled={!tab || !pythonReady || !expression.trim() || disabled || capturing || freezePhase === 'armed' || historySnapshot}
                                         className="primary" onClick={() => void execute('校验中', runQuery)}><Play
-                                        size={14}/>{busy === '校验中' ? '正在校验…' : '校验并高亮'}</button>
+                                        size={14}/>{busy === '校验中' ? '正在校验…' : '回显校验'}</button>
+                                    <button title={result?.total === 1 ? '在当前唯一匹配元素内继续查找' : '当前表达式需校验且恰好匹配一个元素'}
+                                        disabled={!result || result.total !== 1 || !result.matches[0] || disabled || capturing || freezePhase === 'armed' || historySnapshot}
+                                        onClick={() => void execute('设为父级', useAsParent)}><Layers size={14}/>设为父级</button>
+                                    <button className="copy-action clear-highlight" title="清除网页高亮框"
+                                            aria-label="清除网页高亮框"
+                                            disabled={!tab || disabled || capturing || freezePhase === 'armed'}
+                                            onClick={() => void execute('清除高亮', async () => {
+                                                await invoke('clear_highlights');
+                                                setNotice('已清除网页高亮框');
+                                            })}><Eraser size={15}/></button>
                                 </div>
                             </div>
                         </div>
@@ -609,7 +784,7 @@ export default function App() {
                                 <strong>在这里查看匹配的元素</strong><p>输入表达式并校验，结果会同时标记在网页中。</p>
                             </div> : result.total === 0 ?
                                 <div className="results-empty"><Search size={28}/><strong>没有匹配到元素</strong>
-                                    <p>检查表达式和当前上下文，或重新捕获一个元素。</p></div> : <>
+                                    <p>检查表达式和当前查找范围，或重新捕获一个范围内的元素。</p></div> : <>
                                     <div className="result-table">
                                         <div className="result-table-head">
                                             <span>#</span><span>元素 / 文本</span><span>状态</span></div>
@@ -637,41 +812,51 @@ export default function App() {
                     </div>
                 </section>
                 <DetailsResizer/>
-                <section id="details-pane" className={'details-pane' + (workMode === 'desktop' ? ' desktop-details-pane' : workMode === 'elements' ? ' element-details-pane' : workMode === 'recording' ? ' recording-details-pane' : '')}>
-                    {workMode === 'desktop' ? <DesktopDetails d={desk}/> : workMode === 'network' ? <NetworkDetails packet={networkPacket}/> : workMode === 'recording' ? <RecordingDetails recorder={recorder} disabled={disabled} pythonReady={pythonReady} connected={!!tab && desktop} capturing={capturing}/> : <>
-                        <div className="pane-heading"><h2>元素详情</h2><Braces size={16}/></div>
-                        <div className="element-details-body">
-                        {!selected ? <div className="details-empty">
-                            <div className="element-illustration"><Code2 size={38}/></div>
-                            <strong>从一个元素开始</strong><p>捕获或选中匹配结果后，<br/>在这里查看属性、文本和位置尺寸。
-                        </p>
-                        </div> : <div className="details-content">
-                            <div className="element-tag"><code>&lt;{selected.tag}&gt;</code><span
-                                className={'visibility ' + (selected.visible ? 'visible' : '')}>{selected.visible ? '可见' : '隐藏'}</span>
-                            </div>
-                            <div className="element-text"><span>文本</span>
-                                <p title={selected.text || undefined}>{selected.text.replace(/\s+/g, ' ').trim() || '（无文本）'}</p>
-                            </div>
-                            <label
-                                className="detail-label">元素属性 <span>{Object.keys(selected.attributes).length}</span></label>
-                            <dl className="attribute-list">{Object.entries(selected.attributes).map(([name, value]) =>
-                                <div
-                                    key={name}>
-                                    <dt>{name}</dt>
-                                    <dd title={value}>{value || '""'}</dd>
-                                </div>)}</dl>
-                            {historySnapshot ? <p className="capture-snapshot-note">历史快照 · {activeCaptureRecord?.pageTitle || activeCaptureRecord?.pageUrl || '原页面'}<br/>位置与尺寸需重新捕获后读取。</p> :
-                                <ElementGeometryPanel context={context} element={selected}/>}
-                        </div>}</div>
-                        <CaptureHistory records={captureHistory} source={captureSource} selectedId={activeCaptureRecord?.id}
-                                        disabled={disabled || capturing} onSelect={restoreCapture}/>
-                    </>}</section>
+                <section id="details-pane"
+                         className={'details-pane' + (workMode === 'desktop' ? ' desktop-details-pane' : workMode === 'elements' ? ' element-details-pane' : workMode === 'recording' ? ' recording-details-pane' : '')}>
+                    {workMode === 'desktop' ? <DesktopDetails d={desk}/> : workMode === 'network' ?
+                        <NetworkDetails packet={networkPacket}/> : workMode === 'recording' ?
+                            <RecordingDetails recorder={recorder} disabled={disabled} pythonReady={pythonReady}
+                                              connected={!!tab && desktop}
+                                              capturing={capturing || freezePhase !== 'idle'}/> : <>
+                                <div className="pane-heading"><h2>元素详情</h2><Braces size={16}/></div>
+                                <div className="element-details-body">
+                                    {!selected ? <div className="details-empty">
+                                        <div className="element-illustration"><Code2 size={38}/></div>
+                                        <strong>从一个元素开始</strong><p>捕获或选中匹配结果后，<br/>在这里查看属性、文本和位置尺寸。
+                                    </p>
+                                    </div> : <div className="details-content">
+                                        <div className="element-tag"><code>&lt;{selected.tag}&gt;</code><span
+                                            className={'visibility ' + (selected.visible ? 'visible' : '')}>{selected.visible ? '可见' : '隐藏'}</span>
+                                        </div>
+                                        <div className="element-text"><span>文本</span>
+                                            <p title={selected.text || undefined}>{selected.text.replace(/\s+/g, ' ').trim() || '（无文本）'}</p>
+                                        </div>
+                                        <label
+                                            className="detail-label">元素属性 <span>{Object.keys(selected.attributes).length}</span></label>
+                                        <dl className="attribute-list">{Object.entries(selected.attributes).map(([name, value]) =>
+                                            <div
+                                                key={name}>
+                                                <dt>{name}</dt>
+                                                <dd title={value}>{value || '""'}</dd>
+                                            </div>)}</dl>
+                                        {historySnapshot ? <p className="capture-snapshot-note">历史快照
+                                                · {activeCaptureRecord?.pageTitle || activeCaptureRecord?.pageUrl || '原页面'}<br/>位置与尺寸需重新捕获后读取。
+                                            </p> :
+                                            <ElementGeometryPanel context={context} element={selected}/>}
+                                    </div>}</div>
+                                <CaptureHistory records={captureHistory} source={captureSource}
+                                                selectedId={activeCaptureRecord?.id}
+                                                disabled={disabled || capturing} onSelect={restoreCapture}/>
+                            </>}</section>
             </main>
             <footer className="statusbar">
                 <div><span
                     className={'status-dot ' + (tab ? 'online' : '')}/>{workMode === 'desktop' ? desk.busy || desk.notice || desk.status : busy || notice || (tab ? '已连接 · 等待操作' : '就绪 · 请选择浏览器实例')}
                 </div>
-                <span>Ctrl + 点击捕获 <kbd>Esc</kbd> 取消</span></footer>
+                <span>{freezePhase === 'armed' ? <>Alt +
+                    左键确认冻结 <kbd>Esc</kbd> 取消</> : freezePhase === 'frozen' ? <>冻结中 ·
+                    开始捕获后直接点击元素</> : <>Ctrl + 点击捕获 <kbd>Esc</kbd> 取消</>}</span></footer>
         </div>
     </div>;
 }

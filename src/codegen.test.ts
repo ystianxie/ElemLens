@@ -45,3 +45,19 @@ describe('selector and Python snippet generation',()=>{
     expect(snippet).toBe('context = tab.ele(' + pythonString('css:' + selector) + ')\ncontext.ele(' + pythonString('css:' + value) + ')');
   });
 });
+
+
+describe('parent scope snippets', () => {
+  const context = {sessionId:'s',contextId:2,frameId:'f',documentToken:'d',steps:[],parents:[
+    {mode:'CSS',expression:'#orders',token:'p1'},
+    {mode:'DP',expression:'tag:article@@data-id=42',token:'p2'}
+  ]};
+  it('replays the complete mixed-mode chain before performing actions', () => {
+    expect(dpCode(context,'XPath','./button',{click:true,input:'雪'})).toBe(
+      'parent1 = tab.ele("css:#orders")\nparent2 = parent1.ele("tag:article@@data-id=42")\nele = parent2.ele("xpath:./button")\nele.click()\nele.input("雪")');
+  });
+  it('keeps the existing frame/shadow context before the first parent', () => {
+    expect(dpCode({...context,steps:[{kind:'shadow',selector:'x-app'}]},'CSS','button')).toBe(
+      'context = tab.ele("css:x-app").shadow_root\nparent1 = context.ele("css:#orders")\nparent2 = parent1.ele("tag:article@@data-id=42")\nparent2.ele("css:button")');
+  });
+});

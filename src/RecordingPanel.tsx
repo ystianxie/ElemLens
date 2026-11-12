@@ -178,7 +178,7 @@ export function RecordingDetails({recorder: r, disabled, pythonReady, connected,
                 <div className="recording-validation-actions">
                     <button className="primary" disabled={disabled || !r.canValidate || !step.expression.trim()}
                             onClick={() => void r.validate(step.id)}><Play
-                        size={13}/>{r.validatingId === step.id ? '正在校验…' : '校验并高亮'}</button>
+                        size={13}/>{r.validatingId === step.id ? '正在校验…' : '回显校验'}</button>
                     <button disabled={r.steps.indexOf(step) === r.steps.length - 1}
                             onClick={() => r.select(r.steps[r.steps.indexOf(step) + 1].id)}>下一步
                     </button>

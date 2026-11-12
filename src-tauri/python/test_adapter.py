@@ -28,6 +28,21 @@ class Document:
         return self.matches
 
 
+class ScopedElement(Document):
+    def __init__(self, token, matches=(), inside=None):
+        super().__init__(token, matches)
+        self.inside = inside
+        self.scripts = []
+
+    def run_js(self, script):
+        self.scripts.append(script)
+        if '.isWithin(' in script:
+            return self.inside is not None and json.dumps(self.inside) in script
+        if '.register(' in script:
+            return {'token': self.token, 'tag': 'div', 'css': ':scope > div', 'xpath': './div'}
+        return self.token
+
+
 class AdapterTests(unittest.TestCase):
     def setUp(self):
         self.tab = Document('root-live')
@@ -101,6 +116,72 @@ class AdapterTests(unittest.TestCase):
         self.tab.matches = 5
         with self.assertRaisesRegex(ValueError,'标量'):
             self.request()
+
+
+    def scoped_chain(self):
+        leaf = ScopedElement('leaf', inside='inner')
+        inner = ScopedElement('inner', [leaf], inside='outer')
+        outer = ScopedElement('outer', [inner])
+        self.tab.matches = [outer]
+        context = {'documentToken':'root-live','steps':[], 'parents':[
+            {'mode':'CSS','expression':'#orders','token':'old-outer'},
+            {'mode':'DP','expression':'tag:article@@data-id=42','token':'old-inner'}]}
+        return context, outer, inner, leaf
+
+    def test_queries_inside_each_unique_parent_and_returns_fresh_tokens(self):
+        context, outer, inner, leaf = self.scoped_chain()
+        result = self.request(action='query', context=context, mode='XPath', expression='./button')
+        self.assertEqual(self.tab.queries, ['css:#orders'])
+        self.assertEqual(outer.queries, ['tag:article@@data-id=42'])
+        self.assertEqual(inner.queries, ['xpath:./button'])
+        self.assertEqual(result['total'], 1)
+        self.assertEqual([p['token'] for p in result['context']['parents']], ['outer', 'inner'])
+        self.assertEqual([p['token'] for p in context['parents']], ['old-outer', 'old-inner'])
+        self.assertTrue(any('.register(this, "inner")' in script for script in leaf.scripts))
+
+    def test_resolves_scope_for_capture_without_requiring_a_child_expression(self):
+        context, outer, inner, _ = self.scoped_chain()
+        result = self.request(action='resolve_scope', context=context, mode='', expression='')
+        self.assertEqual(result['context']['parents'][-1]['token'], 'inner')
+        self.assertEqual(inner.queries, [])
+        self.assertEqual(result['matches'], [])
+
+    def test_reports_the_exact_parent_that_is_missing_or_no_longer_unique(self):
+        context, outer, inner, _ = self.scoped_chain()
+        outer.matches = []
+        with self.assertRaisesRegex(ValueError, '第 2 层父级匹配到 0'):
+            self.request(context=context)
+        outer.matches = [inner, inner]
+        with self.assertRaisesRegex(ValueError, '第 2 层父级匹配到 2'):
+            self.request(context=context)
+        self.tab.matches = []
+        with self.assertRaisesRegex(ValueError, '第 1 层父级匹配到 0'):
+            self.request(action='resolve_scope',context=context)
+
+    def test_rejects_escaping_xpath_and_cross_context_parent_or_result(self):
+        context, _, inner, leaf = self.scoped_chain()
+        inner.inside = None
+        with self.assertRaisesRegex(ValueError, '超出当前父级范围'):
+            self.request(context=context)
+        inner.inside = 'outer'
+        leaf.inside = None
+        with self.assertRaisesRegex(ValueError, '超出当前父级范围'):
+            self.request(context=context,mode='XPath',expression='ancestor::*')
+        inner.matches = [inner]
+        with self.assertRaisesRegex(ValueError, '超出当前父级范围'):
+            self.request(context=context,mode='XPath',expression='.')
+
+    def test_validates_scoped_results_past_the_display_limit(self):
+        context, _, inner, leaf = self.scoped_chain()
+        inner.matches = [leaf] * 200 + [ScopedElement('outside')]
+        with self.assertRaisesRegex(ValueError, '超出当前父级范围'):
+            self.request(context=context)
+
+    def test_rejects_document_change_while_resolving_parent_chain(self):
+        context, _, _, _ = self.scoped_chain()
+        self.tab.tokens = iter(['root-live', 'root-live', 'changed'])
+        with self.assertRaisesRegex(ValueError, '校验期间页面已变化'):
+            self.request(action='resolve_scope', context=context)
 
 
 if __name__ == '__main__':

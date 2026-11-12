@@ -45,7 +45,11 @@ export function dpQuickLocator(rows: readonly DpCondition[]): { expression: stri
 
 export function dpCode(context: Context | null, mode: string, value: string, actions: { click?: boolean; input?: string } = {}) {
   const lines = (context?.steps ?? []).map((step, index) => `context = ${index === 0 ? 'tab' : 'context'}.ele(${pythonString('css:' + step.selector)})${step.kind === 'shadow' ? '.shadow_root' : ''}`);
-  const element = `${lines.length ? 'context' : 'tab'}.ele(${pythonString(locator(mode, value))})`;
+  for (const [index, parent] of (context?.parents ?? []).entries()) {
+    lines.push(`parent${index + 1} = ${index ? `parent${index}` : lines.length ? 'context' : 'tab'}.ele(${pythonString(locator(parent.mode, parent.expression))})`);
+  }
+  const owner = context?.parents?.length ? `parent${context.parents.length}` : context?.steps.length ? 'context' : 'tab';
+  const element = `${owner}.ele(${pythonString(locator(mode, value))})`;
   if (actions.click && actions.input !== undefined) {
     lines.push(`ele = ${element}`, 'ele.click()', `ele.input(${pythonString(actions.input)})`);
   } else {
